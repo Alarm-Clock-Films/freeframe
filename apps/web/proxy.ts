@@ -26,7 +26,9 @@ export async function proxy(request: NextRequest) {
   const setupDone = request.cookies.get('ff_setup_done')?.value
   if (!setupDone) {
     try {
-      const res = await fetch(`${API_URL}/setup/status`, {
+      // A relative API_URL (`/api`, as on Vercel or behind Traefik) has no
+      // origin on the server; resolve it against the request's own.
+      const res = await fetch(new URL(`${API_URL}/setup/status`, request.url), {
         cache: 'no-store', // the ff_setup_done cookie is the cache
       })
       if (res.ok) {

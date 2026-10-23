@@ -8,10 +8,13 @@ try:
 except ImportError:
     from config import settings
 
+# On Vercel the broker is Vercel Queues (`vercel://`), and the queue
+# subscriber declared in pyproject.toml consumes every queue below. Nothing in
+# this app reads a task result, so there is no result backend there.
 celery_app = Celery(
     "freeframe",
-    broker=settings.redis_url,
-    backend=settings.redis_url,
+    broker=settings.celery_broker,
+    backend=None if settings.uses_vercel_queues else settings.redis_url,
     include=[
         "apps.api.tasks.transcode_tasks",
         "apps.api.tasks.watermark_tasks",
@@ -40,6 +43,7 @@ celery_app.conf.update(
         Queue("maintenance"),  # Housekeeping - long, I/O heavy, latency-insensitive
     ),
     task_default_queue="default",
+    task_ignore_result=settings.uses_vercel_queues,
     # Route tasks to queues.
     #
     # NOTE: the housekeeping tasks below register under bare names
@@ -121,7 +125,14 @@ def send_task_safe(task, *args, **kwargs):
 
     Broker connections can take seconds (especially with pool_limit=0).
     This ensures the API returns immediately while the task is dispatched async.
+
+    On Vercel the send happens inline instead. A serverless function may be
+    frozen as soon as its response is sent, which would strand a background
+    thread before it published; on Vercel Queues the publish is one HTTPS call.
     """
+    if settings.running_on_vercel or settings.uses_vercel_queues:
+        _dispatch_task(task, args, kwargs)
+        return
     thread = threading.Thread(
         target=_dispatch_task,
         args=(task, args, kwargs),

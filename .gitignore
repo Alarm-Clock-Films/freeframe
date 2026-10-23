@@ -234,3 +234,6 @@ e2e/.live-files/
 
 .DS_Store
 .worktrees/
+
+# Vercel CLI (vercel link / vercel env pull)
+.vercel/

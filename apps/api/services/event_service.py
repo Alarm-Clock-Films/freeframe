@@ -108,6 +108,7 @@ async def event_stream(
     recheck_seconds: float,
     expires_at: Optional[float] = None,
     checked_at: Optional[float] = None,
+    max_duration_seconds: float = 0.0,
 ) -> AsyncGenerator[str, None]:
     """Subscribe to a project's channel and yield SSE messages for as long as
     the subscriber stays authorized.
@@ -129,6 +130,10 @@ async def event_stream(
     An idle stream gets a keepalive comment every `recheck_seconds`, or every
     KEEPALIVE_MAX_SECONDS if that is shorter.
 
+    `max_duration_seconds` (0 = no limit) ends the stream cleanly once it has
+    been open that long, for hosts that cut a response off at a fixed duration
+    (a Vercel Function). The client reconnects on its own, as after any drop.
+
     Once a check gives a reason, the stream sends a final `revoked` event
     carrying it and ends. If the check itself fails (the database is down) the
     stream ends without one, and the client's reconnect gets a fresh decision.
@@ -141,10 +146,17 @@ async def event_stream(
     if checked_at is None:
         checked_at = loop.time()
     sent_at = loop.time()
+    close_at = loop.time() + max_duration_seconds if max_duration_seconds > 0 else None
     try:
         while True:
             now = loop.time()
+            if close_at is not None and now >= close_at:
+                # Ask for a prompt reconnect; the client's own backoff applies too.
+                yield "retry: 1000\n\n"
+                return
             wake_at = min(checked_at + recheck_seconds, sent_at + keepalive_seconds)
+            if close_at is not None:
+                wake_at = min(wake_at, close_at)
             if expires_at is not None:
                 wake_at = min(wake_at, now + (expires_at - time.time()))
             # get_message's timeout defaults to 0, which returns at once when

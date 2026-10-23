@@ -145,6 +145,13 @@ For the full guide including **SSL setup**, **bring-your-own infrastructure** (e
 
 **[Production Deployment Guide](docs/deployment.md)**
 
+### Deploy on Vercel
+
+FreeFrame can also run as one Vercel project: the web app and API as Vercel
+services, background jobs on Vercel Queues, transcoding in Vercel Sandbox and
+the scheduled jobs on Vercel Cron, with managed Postgres, Redis and S3. See
+**[Deploying on Vercel](docs/deployment-vercel.md)**.
+
 ## Architecture
 
 ```
@@ -197,6 +204,7 @@ For the full guide including **SSL setup**, **bring-your-own infrastructure** (e
 | Guide | Description |
 |-------|-------------|
 | [Production Deployment](docs/deployment.md) | SSL, bring-your-own infra, scaling, troubleshooting |
+| [Deploying on Vercel](docs/deployment-vercel.md) | Run FreeFrame as a Vercel project (Services, Queues, Sandbox, Cron) |
 | [Architecture](docs/architecture.md) | System design, data flow, media pipeline, permissions |
 | [Export comments to an NLE](docs/comment-export.md) | Export review notes for Resolve, Final Cut Pro, Premiere Pro, or CSV |
 | [Contributing](docs/contributing.md) | Dev setup, testing, code style, PR process |

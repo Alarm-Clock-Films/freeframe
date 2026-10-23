@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from urllib.parse import urlparse
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Default S3 endpoint (local MinIO). Shared between the field default and the
@@ -12,6 +12,8 @@ DEFAULT_S3_ENDPOINT = "http://minio:9000"
 # only the HMAC algorithms work. PyJWT fails an RS/ES algorithm on the first
 # token rather than at startup.
 JWT_ALGORITHMS = ("HS256", "HS384", "HS512")
+
+TRANSCODE_RUNNERS = ("inline", "vercel_sandbox")
 
 
 def _is_aws_endpoint(url: str) -> bool:
@@ -38,11 +40,19 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_find_env_file(),
         env_file_encoding="utf-8",
-        extra="ignore"  # Ignore extra env vars not in model
+        extra="ignore",  # Ignore extra env vars not in model
+        # Fields with an env alias (below) can still be passed by field name.
+        populate_by_name=True,
     )
 
-    database_url: str
-    redis_url: str
+    # The second name in each alias pair is what Vercel Marketplace
+    # integrations inject: Neon sets POSTGRES_URL, Upstash sets KV_URL. The
+    # first (the name used everywhere else in this repo) wins when both exist.
+    database_url: str = Field(validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"))
+    redis_url: str = Field(validation_alias=AliasChoices("REDIS_URL", "KV_URL"))
+    # Celery broker. Unset means REDIS_URL, or Vercel Queues (`vercel://`)
+    # when running on Vercel. See docs/deployment-vercel.md.
+    celery_broker_url: str | None = None
     s3_storage: str = "minio"  # "s3" for AWS S3, "minio" for local MinIO
     s3_bucket: str = "freeframe"
     s3_endpoint: str = DEFAULT_S3_ENDPOINT
@@ -65,6 +75,12 @@ class Settings(BaseSettings):
     # expiry is exact either way: nothing is sent after the token's `exp`.
     sse_auth_max_age_seconds: float = Field(1.0, ge=0)
     sse_auth_recheck_seconds: float = Field(15.0, gt=0)
+    # Longest a single event stream stays open, in seconds. The browser
+    # reconnects on its own when a stream ends, so this only bounds one
+    # connection, not the live view. 0 = no limit. Unset means no limit, or
+    # 250 on Vercel, which ends a function at its maximum duration (300 s by
+    # default) and would otherwise cut the stream mid-write.
+    sse_max_stream_seconds: float | None = Field(None, ge=0)
     frontend_url: str = "http://localhost:3000"
     # Extra browser origins allowed by CORS, comma-separated (in addition to the
     # frontend + localhost defaults). Set to "*" to allow any origin — handy for
@@ -111,6 +127,27 @@ class Settings(BaseSettings):
     # Raise it deliberately (1.0 disables the floor) for a first clean-up of a genuinely dirty bucket,
     # after reading the report-only output.
     orphan_sweep_max_orphan_ratio: float = 0.5
+
+    # Where a transcode (process_asset, apply_watermark, the metadata
+    # backfill) actually runs:
+    #   inline          - in the Celery worker that picked it up (Docker; default)
+    #   vercel_sandbox  - in a Vercel Sandbox started by that worker. For
+    #                     Vercel, where a function has no FFmpeg and at most
+    #                     a few minutes. See docs/deployment-vercel.md.
+    transcode_runner: str = "inline"
+    # Container image the sandbox boots: apps/api/Dockerfile.prod pushed to
+    # the Vercel Container Registry. It carries FFmpeg, ImageMagick and this
+    # code, so it must be rebuilt when the code changes.
+    vercel_sandbox_image: str | None = None
+    # Where the code lives inside that image (WORKDIR of Dockerfile.prod).
+    vercel_sandbox_workdir: str = "/workspace"
+    vercel_sandbox_vcpus: int = Field(4, ge=1)
+    # Hard stop for one sandbox. Hobby allows 45 minutes, Pro up to 5 hours.
+    vercel_sandbox_timeout_minutes: int = Field(45, ge=1)
+
+    # Shared secret Vercel Cron sends as `Authorization: Bearer <CRON_SECRET>`
+    # to /internal/cron/*. Unset disables those endpoints.
+    cron_secret: str | None = None
 
     # Worker concurrency settings
     transcoding_concurrency: int = 2  # Number of concurrent video transcoding jobs
@@ -165,6 +202,20 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
+    def _default_frontend_url_on_vercel(self):
+        """On Vercel, an unset FRONTEND_URL means the project's production domain.
+
+        The web app and the API share one domain there, and Vercel exposes it
+        as VERCEL_PROJECT_PRODUCTION_URL (a bare host). An explicit
+        FRONTEND_URL, such as a custom domain, always wins.
+        """
+        if "frontend_url" not in self.model_fields_set and self.running_on_vercel:
+            host = os.environ.get("VERCEL_PROJECT_PRODUCTION_URL", "").strip()
+            if host:
+                self.frontend_url = host if "://" in host else f"https://{host}"
+        return self
+
+    @model_validator(mode="after")
     def _check_s3_endpoint_consistency(self):
         """Fail loud on `S3_STORAGE=s3` + a real custom (non-AWS) `S3_ENDPOINT`.
 
@@ -184,6 +235,40 @@ class Settings(BaseSettings):
                     f"leave S3_ENDPOINT unset."
                 )
         return self
+
+    @field_validator("transcode_runner")
+    @classmethod
+    def _check_transcode_runner(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in TRANSCODE_RUNNERS:
+            raise ValueError(
+                f"TRANSCODE_RUNNER must be one of {', '.join(TRANSCODE_RUNNERS)}, not {value!r}."
+            )
+        return value
+
+    @property
+    def running_on_vercel(self) -> bool:
+        """True inside a Vercel build or function (Vercel sets VERCEL=1)."""
+        return os.environ.get("VERCEL", "").strip() == "1"
+
+    @property
+    def celery_broker(self) -> str:
+        """The broker Celery publishes to and consumes from."""
+        if self.celery_broker_url:
+            return self.celery_broker_url
+        return "vercel://" if self.running_on_vercel else self.redis_url
+
+    @property
+    def uses_vercel_queues(self) -> bool:
+        """Celery's broker is Vercel Queues (vercel://, vercel-push://, vercel-poll://)."""
+        return self.celery_broker.startswith("vercel")
+
+    @property
+    def sse_stream_limit_seconds(self) -> float:
+        """Longest one event stream may stay open; 0 = no limit."""
+        if self.sse_max_stream_seconds is not None:
+            return self.sse_max_stream_seconds
+        return 250.0 if self.running_on_vercel else 0.0
 
     @property
     def frontend_origin(self) -> str:

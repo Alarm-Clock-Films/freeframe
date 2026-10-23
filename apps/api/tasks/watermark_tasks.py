@@ -29,6 +29,10 @@ def apply_watermark(
     image_key: str | None,
 ):
     """Burn a text watermark into a video/image asset and upload the result to S3."""
+    from ..services.vercel_sandbox import run_in_sandbox, should_offload
+    if should_offload():
+        run_in_sandbox("apply_watermark", [asset_id, watermark_text, position, opacity, image_key])
+        return
     from ..services.s3_service import get_s3_client, put_object
 
     db = SessionLocal()

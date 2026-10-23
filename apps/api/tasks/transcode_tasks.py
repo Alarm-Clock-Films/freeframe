@@ -15,6 +15,7 @@ from ..database import SessionLocal
 from ..models.asset import AssetVersion, MediaFile, ProcessingStatus, AssetType
 from ..models.asset import Asset
 from ..services.s3_service import get_s3_client
+from ..services.vercel_sandbox import run_in_sandbox, should_offload
 from ..config import settings
 
 log = logging.getLogger("celery.transcode")
@@ -31,6 +32,11 @@ def _run_async(coro):
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
 def process_asset(self, asset_id: str, version_id: str):
     """Main processing task dispatched after upload completes."""
+    if should_offload():
+        # TRANSCODE_RUNNER=vercel_sandbox: this same task runs in a sandbox
+        # that has FFmpeg. A failure to start one raises, so it is redelivered.
+        run_in_sandbox("process_asset", [asset_id, version_id])
+        return
     db = SessionLocal()
     try:
         version = db.query(AssetVersion).filter(AssetVersion.id == uuid.UUID(version_id)).first()
@@ -254,6 +260,9 @@ def backfill_media_metadata(self):
     """One-off backfill for #124: probe raw S3 files to populate missing
     duration/width/height/fps on already-processed media. Idempotent —
     only touches rows where duration_seconds IS NULL."""
+    if should_offload():
+        run_in_sandbox("backfill_media_metadata", [])
+        return
     import subprocess
     from packages.transcoder.ffmpeg_transcoder import (
         _PRIMARY_VIDEO_STREAM,

@@ -22,6 +22,7 @@ EXEMPT_PREFIXES = (
     "/redoc",
     "/openapi.json",
     "/share/",     # Public share links should work regardless
+    "/internal/cron/",  # Authenticated by CRON_SECRET, not by a user
 )
 
 

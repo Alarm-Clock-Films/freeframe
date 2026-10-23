@@ -24,7 +24,20 @@ def pin_psycopg2_driver(url: str) -> str:
     return url
 
 
-engine = create_engine(pin_psycopg2_driver(settings.database_url))
+def _engine_options() -> dict:
+    """Pool settings for where the app runs.
+
+    A Vercel Function instance can sit frozen between requests for longer than
+    a managed Postgres (Neon, Supabase) keeps an idle connection, so on Vercel
+    each checkout is pinged first and connections are recycled sooner. The pool
+    is also kept small there, since many instances may run at once.
+    """
+    if not settings.running_on_vercel:
+        return {}
+    return {"pool_pre_ping": True, "pool_recycle": 300, "pool_size": 2, "max_overflow": 8}
+
+
+engine = create_engine(pin_psycopg2_driver(settings.database_url), **_engine_options())
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):

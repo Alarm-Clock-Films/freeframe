@@ -1,0 +1,55 @@
+# Vercel build manifest for the FreeFrame API. Docker builds do not read this
+# file; they install apps/api/requirements.txt. Keep the two dependency lists
+# in step (test_vercel_config.py fails when they drift).
+#
+# The "api" service in vercel.json points here (`entrypoint = "pyproject.toml"`)
+# and its root is the repository root, so the `apps.api` and
+# `packages.transcoder` imports resolve exactly as they do in Docker.
+# See docs/deployment-vercel.md.
+
+[project]
+name = "freeframe-api"
+version = "0.0.0"
+description = "FreeFrame API (Vercel build manifest)"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi==0.143.3",
+    "starlette==1.8.0",
+    "uvicorn[standard]==0.54.0",
+    "sqlalchemy==2.1.4",
+    "alembic==1.20.0",
+    "psycopg2-binary==2.9.13",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.0",
+    "PyJWT==2.15.1",
+    "cryptography==50.0.2",
+    "bcrypt==4.3.0",
+    "python-multipart==0.0.32",
+    "boto3==1.43.115",
+    "botocore==1.43.115",
+    "celery[redis]==5.6.3",
+    "redis==5.3.1",
+    "httpx==0.28.1",
+    "email-validator==2.3.0",
+    "jinja2==3.1.6",
+    "kombu==5.6.2",
+    "pyyaml==6.0.3",
+    # Vercel SDK: Queues (the Celery broker on Vercel), Sandbox (transcoding)
+    # and runtime helpers. Not used by Docker deployments.
+    "vercel==0.12.1",
+]
+
+[tool.vercel]
+# The FastAPI app, served as one Vercel Function.
+entrypoint = "apps.api.main:app"
+
+# Celery worker: one queue-triggered function that consumes every queue the
+# Celery app declares (transcoding, email_high, email_low, maintenance,
+# default), with Vercel Queues as the broker.
+[[tool.vercel.subscribers]]
+entrypoint = "apps.api.tasks.worker:app"
+
+[tool.vercel.scripts]
+# Runs after dependencies are installed: applies database migrations on
+# production builds. See apps/api/scripts/vercel_build.py.
+vercel-build = "python -m apps.api.scripts.vercel_build"

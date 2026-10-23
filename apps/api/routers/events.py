@@ -86,6 +86,7 @@ async def stream_events(
             recheck_seconds=settings.sse_auth_recheck_seconds,
             expires_at=expires_at,
             checked_at=checked_at,
+            max_duration_seconds=settings.sse_stream_limit_seconds,
         ),
         media_type="text/event-stream",
         headers={

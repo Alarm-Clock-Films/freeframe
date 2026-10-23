@@ -17,8 +17,19 @@ import type { InstanceBranding } from '@/stores/branding-store'
  * back to the public one so a deployment that has not set it, and any setup
  * where both happen to be the same host, keeps working.
  */
+/**
+ * On Vercel, NEXT_PUBLIC_API_URL is the relative `/api`, which a server-side
+ * fetch cannot resolve. The API answers on the same deployment, whose host
+ * Vercel exposes as VERCEL_URL. A deployment behind Vercel's deployment
+ * protection refuses that fetch, which only means branding loads client-side.
+ */
+const VERCEL_API_URL = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}/api`
+  : undefined
+
 const INTERNAL_API_URL =
   process.env.API_INTERNAL_URL ||
+  VERCEL_API_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
   'http://localhost:8000'
 

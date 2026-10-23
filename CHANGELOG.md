@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`next.config.js` no longer takes an `eslint` key.** If you run a custom `next.config.js`, remove it; Next 16 ignores the key and warns on every build.
 
 ### Added
+- **Deploy on Vercel.** FreeFrame can run as a single Vercel project: the web app and API as Vercel services on one domain, Celery on Vercel Queues, transcoding in a Vercel Sandbox booted from the API image, and the beat schedule on Vercel Cron. Production builds apply migrations. Docker deployments are unchanged. See [docs/deployment-vercel.md](docs/deployment-vercel.md).
+- **`POSTGRES_URL` and `KV_URL` are accepted** as fallbacks for `DATABASE_URL` and `REDIS_URL`, the names Vercel's Neon and Upstash integrations set.
+- **New settings:** `CELERY_BROKER_URL`, `SSE_MAX_STREAM_SECONDS`, `TRANSCODE_RUNNER` (`inline` by default), `VERCEL_SANDBOX_IMAGE` / `_VCPUS` / `_TIMEOUT_MINUTES`, and `CRON_SECRET` for the new `/internal/cron/*` endpoints, which stay off until it is set.
 - **Appearance settings in the Create Share Link dialog.** Set a link's layout, card size, aspect ratio, Fit/Fill, card info, sort, theme, accent colour and Open in viewer before you create it, or click **Use my current view** to copy the card settings from the project view. A single-asset link offers only theme and accent, the two its viewer uses. The link panel's preview now shows the link with these settings, in its own theme and accent colour. (#517 by @jdanna)
 
 ### Changed
@@ -20,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The web app moves to Next.js 16.4.2 and React 19.** It was on Next 14.2.35 and React 18. `middleware.ts` is now `proxy.ts` (Next 16 renamed the file; the checks are unchanged), route `params` are read as promises, and `next lint` is replaced by `eslint .` with an ESLint 9 flat config (`apps/web/eslint.config.mjs`), because Next 16 removed `next lint`. No API, environment variable or Docker setting changes. Node 20.19 or newer (or 22.12+, 24+) is required; the Docker images and CI already use Node 20.
 
 ### Fixed
+- **The first-run redirect to `/setup` works with a relative `NEXT_PUBLIC_API_URL`.** With the production default `/api`, the web server's setup check had no origin to resolve the URL against, so it always failed quietly and a fresh instance did not send visitors to `/setup`.
 - **The database URL pins the psycopg2 driver.** SQLAlchemy 2.1 changed the default driver for a bare `postgresql://` URL from psycopg2 to psycopg (v3), which is not installed; the API now names `psycopg2` explicitly, so the connection keeps working across the upgrade. A `DATABASE_URL` that already names a driver (for example `postgresql+psycopg://` for psycopg v3) is left as is. (#544)
 - **Switching layout in the share dialog's Settings tab keeps the link's other appearance settings.** It used to reset sort, card size, aspect ratio, Fit/Fill and card info to the defaults. (#517 by @jdanna)
 - **Branding colours reach hover and focus borders.** With an instance branding colour or a share link accent set, those borders stayed the default blue. (#517 by @jdanna)

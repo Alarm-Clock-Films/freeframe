@@ -1,0 +1,38 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "projectSettings": {
+    "framework": "services"
+  },
+  "services": {
+    "web": {
+      "root": "apps/web/"
+    },
+    "api": {
+      "root": "./",
+      "entrypoint": "pyproject.toml",
+      "rewrites": [
+        {
+          "source": "/api/:path(.*)?",
+          "destination": "/:path"
+        }
+      ]
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path(.*)?",
+      "destination": { "service": "api" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "web" }
+    }
+  ],
+  "crons": [
+    { "path": "/api/internal/cron/due-date-reminders", "schedule": "0 * * * *" },
+    { "path": "/api/internal/cron/reap-stale-uploads", "schedule": "0 * * * *" },
+    { "path": "/api/internal/cron/requeue-stuck-processing", "schedule": "30 * * * *" },
+    { "path": "/api/internal/cron/cleanup-soft-deleted", "schedule": "0 3 * * *" },
+    { "path": "/api/internal/cron/sweep-orphan-s3", "schedule": "0 4 * * 0" }
+  ]
+}
