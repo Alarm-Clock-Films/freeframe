@@ -21,7 +21,7 @@ from ..services.auth_service import (
 )
 from ..services.redis_service import (
     generate_magic_code, store_magic_code, verify_magic_code as redis_verify_magic_code,
-    reserve_magic_code_send, MAGIC_CODE_EXPIRY_SECONDS,
+    reserve_magic_code_send, clear_magic_code_sends, MAGIC_CODE_EXPIRY_SECONDS,
 )
 from ..tasks.email_tasks import send_magic_code_email, send_invite_email
 from ..tasks.celery_app import send_task_safe
@@ -120,6 +120,8 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
     success, error = redis_verify_magic_code(body.email, body.code)
     if not success:
         raise HTTPException(status_code=401, detail=MAGIC_CODE_FAILURE_DETAIL)
+    # Signed in: their next code request starts back at the shortest wait.
+    clear_magic_code_sends(body.email)
     
     # Mark email as verified
     user.email_verified = True
@@ -217,6 +219,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         or user.status == UserStatus.deactivated
     ):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    clear_magic_code_sends(body.email)
     return TokenResponse(
         access_token=create_access_token(str(user.id), token_version=user.token_version),
         refresh_token=create_refresh_token(str(user.id), token_version=user.token_version),

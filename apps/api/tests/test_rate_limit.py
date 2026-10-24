@@ -20,8 +20,11 @@ class TestCheckRateLimit:
 
         assert allowed is True
         assert retry_after == 0
-        mock_pipe.incr.assert_called_once()
-        mock_pipe.expire.assert_called_once()
+        # The counter gets its window with SET NX EX, then INCR, in one
+        # transaction: plain commands, so it works on any Redis (Upstash too).
+        mock_pipe.set.assert_called_once_with("rl:test_action:127.0.0.1", 0, nx=True, ex=60)
+        mock_pipe.incr.assert_called_once_with("rl:test_action:127.0.0.1")
+        mock_pipe.expire.assert_not_called()  # EXPIRE ... NX needs Redis 7
         mock_pipe.execute.assert_called_once()
 
     @patch("apps.api.services.redis_service.get_redis")

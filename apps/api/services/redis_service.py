@@ -108,6 +108,21 @@ def delete_invite_token(token: str) -> None:
 RATE_LIMIT_PREFIX = "rl:"
 
 
+def count_in_window(r, key: str, window_seconds: int) -> int:
+    """Add one to a counter that expires `window_seconds` after its first count.
+
+    SET NX EX creates the key with its expiry, and INCR keeps the expiry of a
+    key that already has one. They go in one MULTI/EXEC, so the key cannot
+    expire between the two and come back without a TTL (a counter that would
+    then never reset). Only commands every Redis has, Upstash included; the
+    `EXPIRE ... NX` used before needs Redis 7.
+    """
+    pipe = r.pipeline(transaction=True)
+    pipe.set(key, 0, nx=True, ex=window_seconds)
+    pipe.incr(key)
+    return int(pipe.execute()[1])
+
+
 def check_rate_limit(
     ip: str,
     action: str,
@@ -128,10 +143,7 @@ def check_rate_limit(
             ttl = r.ttl(key)
             return False, max(ttl, 1)
 
-        pipe = r.pipeline()
-        pipe.incr(key)
-        pipe.expire(key, window_seconds, nx=True)
-        pipe.execute()
+        count_in_window(r, key, window_seconds)
         return True, 0
     except Exception:
         # Fail open — allow the request if Redis is unavailable
@@ -141,47 +153,72 @@ def check_rate_limit(
 # ── Per-address limit on sign-in code emails ──────────────────────────────────
 
 MAGIC_CODE_SEND_PREFIX = "magic_code_sends:"
+# The wait grows back to the shortest once this long passes with no code sent.
+MAGIC_CODE_SEND_RESET_SECONDS = 24 * 60 * 60
+
+
+def _send_keys(email: str) -> tuple[str, str]:
+    address = email.strip().lower()
+    return f"{MAGIC_CODE_SEND_PREFIX}wait:{address}", f"{MAGIC_CODE_SEND_PREFIX}count:{address}"
+
+
+def magic_code_wait_seconds(sent: int) -> int:
+    """How long `email` must wait after its `sent`-th code before the next.
+
+    Doubles from MAGIC_CODE_MIN_INTERVAL_SECONDS up to
+    MAGIC_CODE_MAX_INTERVAL_SECONDS: with the defaults 1, 2, 4, ... 32 minutes,
+    then an hour.
+    """
+    first = settings.magic_code_min_interval_seconds
+    longest = max(settings.magic_code_max_interval_seconds, first)
+    return min(first * 2 ** min(max(sent, 1) - 1, 30), longest)
 
 
 def reserve_magic_code_send(email: str) -> bool:
-    """Count one sign-in code email to `email` against that address's limits.
+    """Count one sign-in code email to `email`; False means send nothing.
 
-    Returns False when the address is over a limit, and then no email may be
-    sent. Unlike the per-IP limit this holds however many networks the
-    requests come from, so a known address cannot be flooded, and the mail
-    provider's daily quota cannot be spent on one address.
+    The per-IP limit does not stop someone who knows an address and keeps
+    changing networks. This holds wherever the requests come from: after each
+    code the address must wait before the next, and the wait doubles each
+    time, up to MAGIC_CODE_MAX_INTERVAL_SECONDS. That bounds a flood (about 30
+    emails a day per address with the defaults) without a hard daily cap, which
+    would let anyone lock a person out of code sign-in for a day: the longest
+    anyone waits is one interval. The count goes back to zero 24 hours after
+    the last code, or when the person signs in (clear_magic_code_sends).
 
-    The limits (config.magic_code_*) are a minimum gap between emails and caps
-    per hour and per day; 0 turns one off. Each window starts with the first
-    email in it. Every request that clears the gap counts, including one then
-    refused by a cap, so retrying in a loop does not help.
+    The SET NX claims the send, so of requests that arrive together only one
+    passes. Plain commands only, so this works on any Redis, Upstash included.
 
     Fails open, as check_rate_limit does: without Redis no code can be stored
     either, and the request fails there with an error rather than silently
     sending nothing.
     """
-    address = email.strip().lower()
+    first = settings.magic_code_min_interval_seconds
+    if first <= 0:
+        return True
+    wait_key, count_key = _send_keys(email)
     try:
         r = get_redis()
-        gap = settings.magic_code_min_interval_seconds
-        if gap > 0 and not r.set(f"{MAGIC_CODE_SEND_PREFIX}gap:{address}", "1", nx=True, ex=gap):
+        if not r.set(wait_key, "1", nx=True, ex=first):
             return False
-        for window, limit in (
-            (3600, settings.magic_code_max_per_hour),
-            (86400, settings.magic_code_max_per_day),
-        ):
-            if limit <= 0:
-                continue
-            key = f"{MAGIC_CODE_SEND_PREFIX}{window}:{address}"
-            pipe = r.pipeline()
-            pipe.incr(key)
-            pipe.expire(key, window, nx=True)
-            count, _ = pipe.execute()
-            if count > limit:
-                return False
+        pipe = r.pipeline(transaction=True)
+        pipe.incr(count_key)
+        pipe.expire(count_key, MAGIC_CODE_SEND_RESET_SECONDS)
+        sent = int(pipe.execute()[0])
+        wait = magic_code_wait_seconds(sent)
+        if wait > first:
+            r.expire(wait_key, wait)
         return True
     except Exception:  # noqa: BLE001 - fail open; see the docstring
         return True
+
+
+def clear_magic_code_sends(email: str) -> None:
+    """Start `email` over at the shortest wait: called once its owner signs in."""
+    try:
+        get_redis().delete(*_send_keys(email))
+    except Exception:  # noqa: BLE001 - best effort; the count expires anyway
+        pass
 
 
 # ── Share link password sessions ──────────────────────────────────────────────
