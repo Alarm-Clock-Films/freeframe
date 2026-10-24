@@ -77,18 +77,36 @@ Transcoding needs FFmpeg and ImageMagick and can run for hours, which a Vercel
 Function cannot do. With `TRANSCODE_RUNNER=vercel_sandbox`, the queue worker
 starts a Vercel Sandbox from this image and runs the same task inside it.
 
+Vercel Sandbox boots images from the project's **Vercel Container Registry**
+(VCR), and only `linux/amd64` ones. The `Worker image` workflow
+(`.github/workflows/worker-image.yml`) builds `apps/api/Dockerfile.prod` and
+pushes it there on every push to `main` that touches `apps/api/` or
+`packages/transcoder/`, so the image keeps up with the API code. Run it by hand
+from the Actions tab for the first image.
+
+It signs in with GitHub OIDC, so no Vercel token is stored. Before the first
+run:
+
+1. In the workflow, set `VERCEL_TEAM_ID` (Team Settings → General) and the
+   `IMAGE` path `vcr.vercel.com/<team-slug>/<project-slug>/freeframe-worker`.
+2. In Vercel, open **Team Settings → Build and Deployment** and add an
+   **OIDC policy** for VCR with read-write access, limited to this repository
+   and `.github/workflows/worker-image.yml`.
+
+When the repository shows **Ready** under **Project → Images**, set
+`VERCEL_SANDBOX_IMAGE=freeframe-worker:latest`. A bare repository name resolves
+in the deployment's own project.
+
+To build by hand instead (Docker with Buildx and the Vercel CLI):
+
 ```bash
-docker build -f apps/api/Dockerfile.prod -t freeframe-worker:<git-sha> .
-# Tag and push it to your project's Vercel Container Registry. See Vercel's
-# Container Registry docs for `docker login`; the reference has the form
-#   vcr.vercel.com/<team-slug>/<project-slug>/freeframe-worker:<git-sha>
-docker tag freeframe-worker:<git-sha> vcr.vercel.com/<team>/<project>/freeframe-worker:<git-sha>
-docker push vcr.vercel.com/<team>/<project>/freeframe-worker:<git-sha>
+vercel link
+vercel vcr login docker
+vercel vcr build docker . freeframe-worker:latest --push -- -f apps/api/Dockerfile.prod
 ```
 
-Set `VERCEL_SANDBOX_IMAGE` to that reference. The image contains the API code,
-so **rebuild and re-point it whenever `apps/api/` or `packages/transcoder/`
-changes**, or the sandbox runs older code than the deployment.
+Then **rebuild whenever `apps/api/` or `packages/transcoder/` changes**, or the
+sandbox runs older code than the deployment.
 
 ## 3. Environment variables
 
