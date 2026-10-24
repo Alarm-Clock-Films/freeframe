@@ -18,6 +18,7 @@ import { useShareAppearance } from '@/hooks/use-share-appearance'
 import { useResolvedTheme } from '@/hooks/use-resolved-theme'
 import { PoweredByBadge } from '@/components/shared/powered-by-badge'
 import { ThemedDefaultLogo } from '@/components/shared/themed-default-logo'
+import { cn } from '@/lib/utils'
 
 import type { Asset, SharePermission, ProjectBranding, ShareLinkAppearance } from '@/types'
 
@@ -145,7 +146,7 @@ function PasswordGate({ onSubmit, error, loading }: PasswordGateProps) {
     if (password.trim()) onSubmit(password.trim())
   }
 
-  const { orgName, loginLogoUrl, orgLogoLight, orgLogoDark } = useBranding()
+  const { orgName, loginLogoUrl, orgLogoLight, orgLogoDark, known } = useBranding()
   const theme = useResolvedTheme()
   const displayLogo = resolveBrandingLogo({
     theme,
@@ -158,7 +159,10 @@ function PasswordGate({ onSubmit, error, loading }: PasswordGateProps) {
     <div className="flex min-h-screen items-center justify-center bg-bg-primary p-4">
       <div className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-6 shadow-xl">
         <div className="mb-4 flex flex-col items-center gap-3">
-          {displayLogo ? (
+          {!known ? (
+            // Same footprint, nothing painted: not FreeFrame's mark before the real one.
+            <div className="h-10 w-10" aria-hidden />
+          ) : displayLogo ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={displayLogo} alt={orgName} className="h-10 object-contain" />
           ) : (
@@ -169,7 +173,9 @@ function PasswordGate({ onSubmit, error, loading }: PasswordGateProps) {
             />
           )}
           <div className="text-center">
-            <h1 className="text-sm font-semibold text-text-primary">{orgName}</h1>
+            <h1 className={cn('text-sm font-semibold text-text-primary', !known && 'invisible')}>
+              {known ? orgName : '\u00a0'}
+            </h1>
             <p className="text-xs text-text-tertiary mt-1">Password required to access this link</p>
           </div>
         </div>

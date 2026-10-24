@@ -2,10 +2,20 @@
 
 import * as React from 'react'
 import { useBranding, useEnsureBranding } from '@/components/shared/branding-provider'
-import { accentVars, ACCENT_VAR_NAMES } from '@/lib/accent'
+import { accentVars, ACCENT_VAR_NAMES, ACCENT_CACHE_KEY } from '@/lib/accent'
 import { withBasePath } from '@/lib/base-path'
 
 const DATA_ATTR = 'data-ff-branding'
+
+/** Saved for the next visit; see ACCENT_CACHE_KEY. */
+function saveAccent(vars: Record<string, string> | null) {
+  try {
+    if (vars) localStorage.setItem(ACCENT_CACHE_KEY, JSON.stringify(vars))
+    else localStorage.removeItem(ACCENT_CACHE_KEY)
+  } catch {
+    // Private mode or storage disabled: the next visit just goes without.
+  }
+}
 
 
 /** Shown when an admin hasn't set one. The real mark, not a placeholder, so a
@@ -53,7 +63,7 @@ function setIcon(rel: string, href: string) {
 }
 
 export function BrandingHead() {
-  const { orgName, faviconUrl, appleIconUrl, primaryColor } = useBranding()
+  const { orgName, faviconUrl, appleIconUrl, primaryColor, known } = useBranding()
   useEnsureBranding()
 
   // The org name the tab title was last made for. The title only needs touching
@@ -95,8 +105,13 @@ export function BrandingHead() {
   }, [appleIconUrl])
 
   React.useEffect(() => {
+    // Not known yet, so primaryColor is only the default's null. Acting on it
+    // would strip the accent the inline script just painted from last visit's
+    // copy, flashing the stock colour until the fetch lands.
+    if (!known) return
     const root = document.documentElement
     const vars = accentVars(primaryColor)
+    saveAccent(vars)
 
     if (!vars) {
       // Clearing the colour hands every surface back to the stylesheet default,
@@ -114,7 +129,7 @@ export function BrandingHead() {
     Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v))
     // Kept for anyone already keying off it in custom CSS.
     root.style.setProperty('--ff-primary', primaryColor!)
-  }, [primaryColor])
+  }, [primaryColor, known])
 
   return null
 }
