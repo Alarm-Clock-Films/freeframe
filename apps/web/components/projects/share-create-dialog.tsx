@@ -976,7 +976,7 @@ function LinkCreatedPhase({ result, allResults, onSelectResult, onDone, onAdvanc
                         setAppearance(next)
                         patchLink({ appearance: next })
                       }}
-                      className={cn('rounded-md px-3 py-1 text-2xs font-medium capitalize', appearance.layout === l ? 'bg-accent text-white' : 'text-text-tertiary hover:text-text-primary', 'disabled:opacity-50')}
+                      className={cn('rounded-md px-3 py-1 text-2xs font-medium capitalize', appearance.layout === l ? 'bg-accent text-accent-fg' : 'text-text-tertiary hover:text-text-primary', 'disabled:opacity-50')}
                     >{l}</button>
                   ))}
                 </div>

@@ -305,7 +305,7 @@ function ShareReviewInner({
               load={() => fetchShareDownloadOptions(token, asset.id, shareSession)}
               onPick={(rendition) => handleDownload(token, asset.id, shareSession, rendition)}
             >
-              <button className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-text-inverse bg-accent hover:bg-accent-hover transition-colors">
+              <button className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-accent-fg-inverse bg-accent hover:bg-accent-hover transition-colors">
                 <Download className="h-3 w-3" /> Download
                 <ChevronDown className="h-3 w-3 opacity-70" />
               </button>
@@ -450,7 +450,7 @@ function GuestIdentityPrompt({ onSave, onCancel }: { onSave: (name: string, emai
           <button
             disabled={!name.trim() || !email.trim()}
             onClick={() => onSave(name.trim(), email.trim())}
-            className="px-4 py-1.5 rounded-md bg-accent text-xs font-medium text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
+            className="px-4 py-1.5 rounded-md bg-accent text-xs font-medium text-accent-fg hover:bg-accent/90 disabled:opacity-50 transition-colors"
           >
             Continue
           </button>

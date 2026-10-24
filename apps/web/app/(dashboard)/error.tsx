@@ -39,7 +39,7 @@ export default function DashboardError({ error, reset }: ErrorProps) {
       {/* Retry button */}
       <button
         onClick={reset}
-        className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-text-inverse transition-opacity hover:opacity-90"
+        className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg-inverse transition-opacity hover:opacity-90"
       >
         <RefreshCw className="h-4 w-4" />
         Try again

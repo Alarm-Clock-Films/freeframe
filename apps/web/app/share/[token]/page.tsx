@@ -426,7 +426,7 @@ export default function SharePage({
           </p>
           <a
             href={withBasePath('/login')}
-            className="mt-4 inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-text-primary hover:bg-accent/90 transition-colors"
+            className="mt-4 inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-fg-primary hover:bg-accent/90 transition-colors"
           >
             Sign in to continue
           </a>

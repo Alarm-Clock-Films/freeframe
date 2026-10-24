@@ -211,7 +211,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <div className="relative shrink-0">
               <Upload className="h-[18px] w-[18px]" strokeWidth={panelOpen ? 2 : 1.5} />
               {activeUploads > 0 && (
-                <span className="absolute -top-1 -right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-0.5 text-[9px] font-bold text-white">
+                <span className="absolute -top-1 -right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-0.5 text-[9px] font-bold text-accent-fg">
                   {activeUploads}
                 </span>
               )}

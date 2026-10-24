@@ -745,7 +745,7 @@ export function ShareLinkContent({
           {/* The share page's header, cut down to what shows the accent */}
           <div className="flex items-center justify-between gap-3 border-b border-border px-4 h-11">
             <div className="flex min-w-0 items-center gap-2.5">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-[9px] font-bold text-text-inverse">
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-[9px] font-bold text-accent-fg-inverse">
                 {(shareLink.title || "FF").substring(0, 2).toUpperCase()}
               </div>
               <span className="truncate text-[13px] font-medium text-text-primary">
@@ -753,7 +753,7 @@ export function ShareLinkContent({
               </span>
             </div>
             {shareLink.allow_download && (
-              <span className="flex h-6 shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 text-[11px] font-medium text-white">
+              <span className="flex h-6 shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 text-[11px] font-medium text-accent-fg">
                 <Download className="h-3 w-3" />
                 Download All
               </span>
@@ -900,7 +900,7 @@ export function ShareLinkContent({
         <div className="flex items-center gap-3">
           <button
             onClick={() => window.open(shareUrl, "_blank")}
-            className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-text-inverse hover:bg-accent/90 transition-colors"
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg-inverse hover:bg-accent/90 transition-colors"
           >
             <ExternalLink className="h-4 w-4" />
             Open Share Link
@@ -1160,7 +1160,7 @@ export function ShareLinkSettingsPanel({ token }: ShareLinkSettingsPanelProps) {
       <div className="border-t border-border p-3 shrink-0 flex items-center gap-2">
         <button
           onClick={() => window.open(shareUrl, "_blank")}
-          className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-text-inverse hover:bg-accent/90 transition-colors"
+          className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-fg-inverse hover:bg-accent/90 transition-colors"
         >
           <ExternalLink className="h-4 w-4" />
           Open Share Link

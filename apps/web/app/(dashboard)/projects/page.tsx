@@ -172,7 +172,7 @@ function ProjectSection({
           onClick={onNewProject}
           className="group flex w-full items-center gap-4 rounded-xl border-2 border-dashed border-border bg-bg-secondary/30 px-5 py-8 hover:border-accent/40 hover:bg-bg-secondary/60 transition-all duration-200"
         >
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-bg-tertiary text-text-tertiary group-hover:bg-accent group-hover:text-white transition-colors">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-bg-tertiary text-text-tertiary group-hover:bg-accent group-hover:text-accent-fg transition-colors">
             <Plus className="h-5 w-5" />
           </div>
           <div className="text-left">
@@ -201,7 +201,7 @@ function ProjectSection({
               onClick={onNewProject}
               className="group flex flex-col items-center justify-center gap-2.5 rounded-xl border-2 border-dashed border-border bg-bg-secondary/30 aspect-square hover:border-accent/40 hover:bg-bg-secondary/60 transition-all duration-200"
             >
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-bg-tertiary text-text-tertiary group-hover:bg-accent group-hover:text-white transition-colors">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-bg-tertiary text-text-tertiary group-hover:bg-accent group-hover:text-accent-fg transition-colors">
                 <Plus className="h-5 w-5" />
               </div>
               <span className="text-sm text-text-secondary group-hover:text-text-primary transition-colors">

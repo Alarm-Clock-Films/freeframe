@@ -966,7 +966,7 @@ export default function ProjectDetailPage() {
         // pointer swallows the dragleave and the drop underneath it, so the
         // marking would stick and the drop would never arrive.
         <div className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-xl border-2 border-accent bg-accent/10">
-          <span className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white shadow-lg">
+          <span className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg shadow-lg">
             Drop to upload
           </span>
         </div>
