@@ -10,10 +10,44 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 import boto3
 from botocore.config import Config
 from .base import BaseTranscoder, TranscodeJob, TranscodeResult, VideoMetadata
 from .redact import redact_presigned_urls, redacted_timeout
+
+
+def input_protocol_whitelist_args(input_url: str) -> list[str]:
+    """`-protocol_whitelist` to put before `-i <input_url>` (and before an
+    ffprobe positional input) when the input is an untrusted uploaded file.
+
+    FFmpeg picks a demuxer from the input, and some demuxers (HLS, DASH, concat)
+    treat the file as a list of *other* URLs to fetch. Left unrestricted, a
+    crafted upload could steer the worker into reading `file://` paths (local
+    disclosure) or `http://` hosts (SSRF — cloud metadata, internal services).
+    The uploaded object is always a single media file, so the only protocols a
+    legitimate transcode needs are the one the presigned URL itself uses plus
+    the TLS/TCP plumbing (and `crypto`/`data` for in-band media). Notably this
+    drops `file` in every case, and `http` whenever the input is `https`, which
+    is what blocks the metadata/internal SSRF pivot on a real deployment.
+
+    This is defence in depth: the raw object key's extension is also forced to a
+    safe media extension at upload time (see apps/api/schemas/upload.py), so a
+    playlist demuxer is not selected in the first place.
+    """
+    scheme = (urlsplit(input_url).scheme or "").lower()
+    base = ["tcp", "tls", "crypto", "data"]
+    if scheme == "https":
+        allowed = ["https", *base]
+    elif scheme == "http":
+        allowed = ["http", *base]
+    elif scheme:
+        # Only presigned http(s) URLs reach here in practice; be conservative
+        # for anything else and still never add `file`.
+        allowed = [scheme, *base]
+    else:
+        allowed = base
+    return ["-protocol_whitelist", ",".join(allowed)]
 
 # FFmpeg's uppercase `V` excludes streams flagged with the attached_pic disposition.
 _PRIMARY_VIDEO_STREAM = "V:0"
@@ -1587,7 +1621,8 @@ class FFmpegTranscoder(BaseTranscoder):
                     "ffprobe", "-v", "error", "-select_streams", _PRIMARY_VIDEO_STREAM,
                     "-read_intervals", interval,
                     "-show_entries", "packet=pts_time,flags",
-                    "-print_format", "json", input_url,
+                    "-print_format", "json",
+                    *input_protocol_whitelist_args(input_url), input_url,
                 ],
                 timeout=300, label="ffprobe",
             )
@@ -1657,6 +1692,7 @@ class FFmpegTranscoder(BaseTranscoder):
             traced = subprocess.run(
                 [
                     "ffmpeg", "-v", "trace", *seek, "-t", f"{length:g}",
+                    *input_protocol_whitelist_args(input_url),
                     "-i", input_url, "-map", f"0:{_PRIMARY_VIDEO_STREAM}", "-c", "copy",
                     "-bsf:v", "trace_headers", "-f", "null", "-",
                 ],
@@ -1821,7 +1857,8 @@ class FFmpegTranscoder(BaseTranscoder):
         cmd = [
             "ffprobe", "-v", "error", "-print_format", "json",
             "-show_streams", "-select_streams", _PRIMARY_VIDEO_STREAM,
-            "-show_format", input_url,
+            "-show_format",
+            *input_protocol_whitelist_args(input_url), input_url,
         ]
         stdout = self._run(cmd, timeout=120, label="ffprobe")
         meta = parse_probe_metadata(json.loads(stdout))
@@ -1835,7 +1872,8 @@ class FFmpegTranscoder(BaseTranscoder):
         thumb_dir = tempfile.mkdtemp()
         try:
             cmd = [
-                "ffmpeg", "-i", input_url, "-map", f"0:{_PRIMARY_VIDEO_STREAM}",
+                "ffmpeg", *input_protocol_whitelist_args(input_url),
+                "-i", input_url, "-map", f"0:{_PRIMARY_VIDEO_STREAM}",
                 "-vf", f"fps=0.1,{_THUMB_GEOMETRY},format=yuvj420p",
                 "-q:v", "2",
                 f"{thumb_dir}/thumb_%04d.jpg",
@@ -1869,7 +1907,8 @@ class FFmpegTranscoder(BaseTranscoder):
             cmd = [
                 "ffprobe", "-v", "error", "-print_format", "json",
                 "-show_streams", "-select_streams", _PRIMARY_VIDEO_STREAM,
-                "-show_format", input_url,
+                "-show_format",
+                *input_protocol_whitelist_args(input_url), input_url,
             ]
             vid_info = self._run(cmd, timeout=120, label="ffprobe")
             vid_data = json.loads(vid_info)
@@ -1906,7 +1945,8 @@ class FFmpegTranscoder(BaseTranscoder):
             # 2. Check if input has an audio stream
             audio_cmd = [
                 "ffprobe", "-v", "error", "-print_format", "json",
-                "-show_streams", "-select_streams", "a", input_url,
+                "-show_streams", "-select_streams", "a",
+                *input_protocol_whitelist_args(input_url), input_url,
             ]
             audio_result = self._run(audio_cmd, timeout=120, label="ffprobe")
             audio_streams = json.loads(audio_result).get("streams") or []
@@ -2041,7 +2081,8 @@ class FFmpegTranscoder(BaseTranscoder):
                 thing being avoided.
                 """
                 cmd = [
-                    "ffmpeg", "-y", "-i", input_url,
+                    "ffmpeg", "-y",
+                    *input_protocol_whitelist_args(input_url), "-i", input_url,
                     "-map", f"0:{_PRIMARY_VIDEO_STREAM}",
                 ]
                 if has_audio:
@@ -2204,6 +2245,7 @@ class FFmpegTranscoder(BaseTranscoder):
                     ffmpeg_cmd += cpu_upload["args"]
                 elif not dv_software:
                     ffmpeg_cmd += _BACKEND_HWACCEL.get(backend, [])
+                ffmpeg_cmd += input_protocol_whitelist_args(input_url)
                 ffmpeg_cmd += ["-i", input_url]
                 ffmpeg_cmd += ["-filter_complex", filter_complex]
                 if cpu_plan is not None:
@@ -2491,7 +2533,8 @@ class FFmpegTranscoder(BaseTranscoder):
             thumb_path = work_dir / "thumb_0001.jpg"
             thumb_vf = _thumbnail_filter(is_hdr, dv_software)
             thumb_cmd = [
-                "ffmpeg", "-y", "-i", input_url,
+                "ffmpeg", "-y",
+                *input_protocol_whitelist_args(input_url), "-i", input_url,
                 "-vf", thumb_vf, "-q:v", "2", "-frames:v", "1",
                 str(work_dir / "thumb_%04d.jpg"),
             ]
