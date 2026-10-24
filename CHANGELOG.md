@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`next.config.js` no longer takes an `eslint` key.** If you run a custom `next.config.js`, remove it; Next 16 ignores the key and warns on every build.
 
 ### Added
+- **Vercel Web Analytics and Speed Insights.** On Vercel deployments the web app loads both; each starts recording once switched on for the project in the Vercel dashboard. Share-link and invite tokens are replaced with `[token]`, and query strings dropped, before any URL is sent. Docker and local builds don't load them. See [Analytics and Speed Insights](docs/deployment-vercel.md#analytics-and-speed-insights).
 - **Deploy on Vercel.** FreeFrame can run as a single Vercel project: the web app and API as Vercel services on one domain, Celery on Vercel Queues, transcoding in a Vercel Sandbox booted from the API image, and the beat schedule on Vercel Cron. Production builds apply migrations. Docker deployments are unchanged. See [docs/deployment-vercel.md](docs/deployment-vercel.md).
 - **`POSTGRES_URL` and `KV_URL` are accepted** as fallbacks for `DATABASE_URL` and `REDIS_URL`, the names Vercel's Neon and Upstash integrations set.
 - **New settings:** `CELERY_BROKER_URL`, `SSE_MAX_STREAM_SECONDS`, `TRANSCODE_RUNNER` (`inline` by default), `VERCEL_SANDBOX_IMAGE` / `_VCPUS` / `_TIMEOUT_MINUTES`, and `CRON_SECRET` for the new `/internal/cron/*` endpoints, which stay off until it is set.
