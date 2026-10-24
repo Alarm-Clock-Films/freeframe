@@ -146,6 +146,43 @@ def test_worker_entrypoint_registers_every_routed_task():
     assert {"transcoding", "email_high", "email_low", "maintenance", "default"} <= queues
 
 
+def test_every_task_publishes_through_the_freeframe_app():
+    """A task must publish through `celery_app`, whatever thread sends it.
+
+    `@shared_task` resolves its app per call through Celery's thread-local
+    current app. A thread that never set one (a Vercel Function handling a
+    request) falls back to Celery's unnamed default app, so the email tasks
+    published to `celery-default-email__high`, a queue the subscriber never
+    reads, and no magic code or invite was ever sent.
+    """
+    import threading
+    from celery.local import Proxy
+    from celery.app.task import Task
+    from apps.api.tasks import (cleanup_tasks, email_tasks, reminder_tasks,
+                                transcode_tasks, watermark_tasks)
+    from apps.api.tasks.celery_app import celery_app
+
+    # The module attributes are what the routers call (`.delay`), not the
+    # copies in `celery_app.tasks`, which are always bound to the right app.
+    ours = {}
+    for module in (cleanup_tasks, email_tasks, reminder_tasks, transcode_tasks, watermark_tasks):
+        for attr, value in vars(module).items():
+            if isinstance(value, (Task, Proxy)) and hasattr(value, "delay"):
+                ours[f"{module.__name__}.{attr}"] = value
+    assert "apps.api.tasks.email_tasks.send_magic_code_email" in ours
+
+    seen = {}
+
+    def resolve():
+        seen.update({name: task.app.main for name, task in ours.items()})
+
+    t = threading.Thread(target=resolve)
+    t.start()
+    t.join()
+    wrong = {name: main for name, main in seen.items() if main != celery_app.main}
+    assert not wrong, wrong
+
+
 # ── cron ──────────────────────────────────────────────────────────────────────
 
 def test_cron_endpoints_are_hidden_without_a_secret(client, monkeypatch):
