@@ -6,8 +6,11 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+// outline-none, not focus-visible:outline-none: with transition-all, a state-only
+// outline-none animates the outline from the text colour to transparent on focus,
+// flashing a white ring. The focus ring below replaces the outline.
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-all duration-150 ease-spring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-primary disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-all duration-150 ease-spring outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-primary disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]',
   {
     variants: {
       variant: {

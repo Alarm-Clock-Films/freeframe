@@ -38,11 +38,17 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
             type={isPassword && showPassword ? 'text' : type}
             className={cn(
               'flex h-10 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary',
-              'transition-all duration-150 focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20',
+              // outline-none applies before and after focus alike. As focus:outline-none it
+              // only took effect on focus, so transition-all animated the outline from
+              // the text colour to transparent: a white ring that flashed and faded.
+              // The focus glow is the accent at 20%. Written out with color-mix: the
+              // accent is a bare var(), and Tailwind's /20 modifier compiles to no
+              // CSS for those, which left the default blue ring instead.
+              'outline-none transition-all duration-150 focus:border-accent focus:ring-2 focus:ring-[color:color-mix(in_srgb,var(--accent)_20%,transparent)]',
               'disabled:cursor-not-allowed disabled:opacity-50',
               icon && 'pl-9',
               isPassword && 'pr-9',
-              error && 'border-status-error focus:border-status-error focus:ring-status-error/20',
+              error && 'border-status-error focus:border-status-error focus:ring-[color:color-mix(in_srgb,var(--status-error)_20%,transparent)]',
               className,
             )}
             {...props}
