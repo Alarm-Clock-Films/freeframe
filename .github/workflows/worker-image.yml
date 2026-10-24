@@ -1,0 +1,61 @@
+name: Worker image
+
+# Builds the transcoding image (apps/api/Dockerfile.prod) and pushes it to the
+# Vercel Container Registry, where Vercel Sandbox boots it for each transcode
+# (TRANSCODE_RUNNER=vercel_sandbox). The image carries the API code, so it is
+# rebuilt whenever that code changes on main; VERCEL_SANDBOX_IMAGE points at
+# the moving `latest` tag, and each build is also tagged with its commit SHA.
+#
+# Signs in with GitHub OIDC (no stored token). That needs a VCR OIDC policy on
+# the Vercel team for this repository and workflow; see
+# docs/deployment-vercel.md, step 2.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "packages/transcoder/**"
+      - ".github/workflows/worker-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  VERCEL_TEAM_ID: team_21PxFQlVqxlGGqEgx5m6KVAz
+  IMAGE: vcr.vercel.com/peter-s-team7/frame/freeframe-worker
+
+jobs:
+  push:
+    name: Build and push to VCR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to VCR
+        uses: vercel/vcr-action/login@v1
+        with:
+          team: ${{ env.VERCEL_TEAM_ID }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile.prod
+          # Vercel Sandbox only boots linux/amd64 images.
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          outputs: type=image,push=true,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
