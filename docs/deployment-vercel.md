@@ -178,7 +178,7 @@ custom domain) as an origin on the bucket yourself.
 - **To turn previews back on**, give them their own database (Neon branching
   per preview), Redis and `JWT_SECRET` for the Preview environment, set
   `FREEFRAME_MIGRATE_ON_BUILD=1` there so each branch database is migrated,
-  and remove the `"*": false` rule. Preview builds do not migrate by default.
+  and remove the `"**": false` rule. Preview builds do not migrate by default.
   Previews behind Vercel's deployment protection can't fetch branding on the
   server; it then loads in the browser, as before server rendering existed.
 - **`NEXT_PUBLIC_BASE_PATH`** (sub-path deployments) is not supported on

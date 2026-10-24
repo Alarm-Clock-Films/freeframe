@@ -253,7 +253,10 @@ def test_only_the_production_branch_deploys_from_git():
     """
     cfg = json.loads((REPO_ROOT / "vercel.json").read_text())
     enabled = cfg["git"]["deploymentEnabled"]
-    assert enabled["*"] is False
+    # `*` stops at "/" in minimatch, so it never matched branches like
+    # claude/fix-x; `**` matches every branch name.
+    assert enabled["**"] is False
+    assert "*" not in enabled
     assert enabled["main"] is True
 
 
