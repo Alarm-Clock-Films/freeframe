@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { headers } from 'next/headers'
 import type { InstanceBranding } from '@/stores/branding-store'
 
 /**
@@ -19,26 +20,49 @@ import type { InstanceBranding } from '@/stores/branding-store'
  */
 /**
  * On Vercel, NEXT_PUBLIC_API_URL is the relative `/api`, which a server-side
- * fetch cannot resolve. The API answers on the same deployment.
+ * fetch cannot resolve on its own. The API answers on the same domain, so the
+ * read goes to the address the visitor used: that one is public and reachable
+ * by definition, since the request for this page just came through it.
  *
- * In production that is reached through the production domain, not VERCEL_URL:
- * VERCEL_URL is the per-deployment `*.vercel.app` address, which Vercel's
- * default (Standard) deployment protection puts behind a login. A fetch to it
- * comes back 401, branding falls back to the browser, and the defaults flash
- * on every page load. Production domains are never behind that protection.
- * Preview deployments have no production domain of their own, so they keep
- * VERCEL_URL; a protected preview only means branding loads client-side.
+ * Guessing the address from Vercel's variables instead was unreliable. They
+ * can name a `*.vercel.app` address that sits behind Vercel's deployment
+ * protection while the custom domain is public, and then every read came back
+ * 401. A failed read is never cached, so it failed on every page load, and the
+ * sign-in screen stayed hidden until the browser's own fetch landed.
+ *
+ * The Vercel address is kept only as the fallback for when there is no request
+ * to read the address from.
  */
 const VERCEL_HOST =
   (process.env.VERCEL_ENV === 'production' && process.env.VERCEL_PROJECT_PRODUCTION_URL) ||
   process.env.VERCEL_URL
 const VERCEL_API_URL = VERCEL_HOST ? `https://${VERCEL_HOST}/api` : undefined
 
-const INTERNAL_API_URL =
-  process.env.API_INTERNAL_URL ||
-  VERCEL_API_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  'http://localhost:8000'
+const PUBLIC_API_URL = process.env.NEXT_PUBLIC_API_URL
+
+/** The scheme and host this request arrived on, or null outside a request. */
+async function requestOrigin(): Promise<string | null> {
+  try {
+    const h = await headers()
+    const host = (h.get('x-forwarded-host') ?? h.get('host'))?.split(',')[0].trim()
+    if (!host) return null
+    const proto = (h.get('x-forwarded-proto') ?? 'https').split(',')[0].trim()
+    return `${proto}://${host}`
+  } catch {
+    // `next build`, tests: there is no request.
+    return null
+  }
+}
+
+/** Where the server reads branding from, most direct first. */
+async function brandingApiBase(): Promise<string> {
+  if (process.env.API_INTERNAL_URL) return process.env.API_INTERNAL_URL
+  if (PUBLIC_API_URL?.startsWith('/')) {
+    const origin = await requestOrigin()
+    if (origin) return `${origin}${PUBLIC_API_URL}`
+  }
+  return VERCEL_API_URL || PUBLIC_API_URL || 'http://localhost:8000'
+}
 
 /** Long enough for a slow container start, short enough not to hold a page. */
 const TIMEOUT_MS = 3000
@@ -48,8 +72,10 @@ const TIMEOUT_MS = 3000
  * call, which would make the first result the only one a test could ever see.
  */
 export async function fetchServerBranding(): Promise<InstanceBranding | null> {
+    let url = '/instance/branding'
     try {
-      const res = await fetch(`${INTERNAL_API_URL}/instance/branding`, {
+      url = `${await brandingApiBase()}/instance/branding`
+      const res = await fetch(url, {
         // Revalidated rather than uncached: this is one row that changes when an
         // admin edits it, and re-fetching it on every render of every page would
         // put a round trip in front of each one. An admin's own view updates
@@ -58,9 +84,15 @@ export async function fetchServerBranding(): Promise<InstanceBranding | null> {
         next: { revalidate: 60 },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       })
-      if (!res.ok) return null
+      if (!res.ok) {
+        // Logged because the cost is invisible otherwise: every page then
+        // waits for the browser to fetch branding before showing the brand.
+        console.warn(`[branding] server read got HTTP ${res.status} from ${url}`)
+        return null
+      }
       return (await res.json()) as InstanceBranding
-    } catch {
+    } catch (err) {
+      console.warn(`[branding] server read failed for ${url}: ${err instanceof Error ? err.message : String(err)}`)
       // Never throw. This runs during `next build`, where there is no API to
       // answer, and inside a layout, where throwing would replace the whole page
       // with an error. Returning null means the client fetches branding the way
