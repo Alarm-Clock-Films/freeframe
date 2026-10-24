@@ -8,7 +8,7 @@ Queues:
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from celery import shared_task
+from .celery_app import celery_app
 from jinja2 import Environment, FileSystemLoader
 
 # Setup Jinja2 template environment
@@ -45,7 +45,7 @@ def _send_email(to_email: str, subject: str, html_body: str, text_body: Optional
 # HIGH PRIORITY EMAILS (email_high queue)
 # ============================================================================
 
-@shared_task(bind=True, queue="email_high", max_retries=3, default_retry_delay=30)
+@celery_app.task(bind=True, queue="email_high", max_retries=3, default_retry_delay=30)
 def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 10, org_name: Optional[str] = None):
     """Send magic code email - high priority, immediate delivery."""
     label = org_name or resolve_org_name()
@@ -68,7 +68,7 @@ def send_magic_code_email(self, to_email: str, code: str, expiry_minutes: int = 
         self.retry(exc=exc)
 
 
-@shared_task(bind=True, queue="email_high", max_retries=3, default_retry_delay=60)
+@celery_app.task(bind=True, queue="email_high", max_retries=3, default_retry_delay=60)
 def send_invite_email(
     self,
     to_email: str,
@@ -104,7 +104,7 @@ def send_invite_email(
 # MEDIUM PRIORITY EMAILS (email_low queue)
 # ============================================================================
 
-@shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
+@celery_app.task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
 def send_mention_email(
     self,
     to_email: str,
@@ -134,7 +134,7 @@ def send_mention_email(
         self.retry(exc=exc)
 
 
-@shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
+@celery_app.task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
 def send_comment_email(
     self,
     to_email: str,
@@ -164,7 +164,7 @@ def send_comment_email(
         self.retry(exc=exc)
 
 
-@shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
+@celery_app.task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
 def send_assignment_email(
     self,
     to_email: str,
@@ -197,7 +197,7 @@ def send_assignment_email(
         self.retry(exc=exc)
 
 
-@shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
+@celery_app.task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
 def send_share_email(
     self,
     to_email: str,
@@ -229,7 +229,7 @@ def send_share_email(
         self.retry(exc=exc)
 
 
-@shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
+@celery_app.task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
 def send_approval_email(
     self,
     to_email: str,
@@ -262,7 +262,7 @@ def send_approval_email(
         self.retry(exc=exc)
 
 
-@shared_task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
+@celery_app.task(bind=True, queue="email_low", max_retries=3, default_retry_delay=120)
 def send_project_added_email(
     self,
     to_email: str,
