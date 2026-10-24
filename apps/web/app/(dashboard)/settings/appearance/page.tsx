@@ -104,7 +104,7 @@ export default function AppearancePage() {
 
                 {/* Active indicator */}
                 {isActive && (
-                  <div className="absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-white">
+                  <div className="absolute top-2 right-2 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-accent-fg">
                     <Check className="h-3 w-3" />
                   </div>
                 )}

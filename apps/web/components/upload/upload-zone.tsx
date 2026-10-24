@@ -89,7 +89,7 @@ export function UploadZone({ onFilesSelected, className }: UploadZoneProps) {
         </p>
         <button
           type="button"
-          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors"
+          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:bg-accent-hover transition-colors"
           onClick={(e) => { e.stopPropagation(); inputRef.current?.click() }}
         >
           Upload

@@ -370,7 +370,7 @@ function InlineReplyInput({
           <button
             onClick={handleSubmit}
             disabled={!body.trim() || submitting}
-            className="h-7 w-7 flex items-center justify-center rounded-full bg-accent text-text-inverse hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="h-7 w-7 flex items-center justify-center rounded-full bg-accent text-accent-fg-inverse hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <Send className="h-3.5 w-3.5" />
           </button>
@@ -605,7 +605,7 @@ function CommentItem({
                     } catch { /* silent */ }
                     finally { setSaving(false); }
                   }}
-                  className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
+                  className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-accent-fg hover:bg-accent/90 disabled:opacity-50 transition-colors"
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </button>
@@ -1128,7 +1128,7 @@ export function CommentPanel({
                     )}
                   >
                     {filters[key] && (
-                      <Check className="h-3 w-3 text-text-inverse" />
+                      <Check className="h-3 w-3 text-accent-fg-inverse" />
                     )}
                   </div>
                 </button>

@@ -448,7 +448,7 @@ export function AssetGrid({
                     className={cn(
                       'absolute top-2 left-2 z-10 h-5 w-5 rounded border flex items-center justify-center transition-all',
                       isFolderSelected
-                        ? 'bg-accent border-accent text-white opacity-100'
+                        ? 'bg-accent border-accent text-accent-fg opacity-100'
                         : 'bg-black/40 border-white/30 text-transparent opacity-0 group-hover/folder:opacity-100',
                     )}
                     onClick={(e) => handleFolderCheckbox(folder.id, e)}
@@ -600,7 +600,7 @@ export function AssetGrid({
                     <div className={cn(
                       'h-4 w-4 rounded border flex items-center justify-center transition-all',
                       isFolderSelected
-                        ? 'bg-accent border-accent text-white'
+                        ? 'bg-accent border-accent text-accent-fg'
                         : 'bg-black/40 border-white/40 text-transparent',
                     )}>
                       {isFolderSelected && <Check className="h-2.5 w-2.5" />}
@@ -698,7 +698,7 @@ export function AssetGrid({
                     <div className={cn(
                       'h-4 w-4 rounded border flex items-center justify-center transition-all',
                       selectedAssetIds.has(asset.id)
-                        ? 'bg-accent border-accent text-white'
+                        ? 'bg-accent border-accent text-accent-fg'
                         : 'bg-black/40 border-white/40 text-transparent',
                     )}>
                       {selectedAssetIds.has(asset.id) && <Check className="h-2.5 w-2.5" />}

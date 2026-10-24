@@ -33,6 +33,14 @@ const config: Config = {
           DEFAULT: 'var(--accent)',
           hover: 'var(--accent-hover)',
           muted: 'var(--accent-muted)',
+          // Text on an accent surface. --accent-fg is set from a custom accent
+          // (lib/accent.ts) to whichever of white or near-black reads better;
+          // with the stock accent it is unset and each falls back to the text
+          // colour that surface had before: white, the inverse text colour, or
+          // the primary text colour.
+          fg: 'var(--accent-fg, #ffffff)',
+          'fg-inverse': 'var(--accent-fg, var(--text-inverse))',
+          'fg-primary': 'var(--accent-fg, var(--text-primary))',
         },
         status: {
           success: 'var(--status-success)',

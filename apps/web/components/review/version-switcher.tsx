@@ -63,12 +63,12 @@ export function VersionSwitcher({ versions, className }: VersionSwitcherProps) {
       <span className="text-xs text-text-tertiary shrink-0">Version:</span>
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors outline-none">
+          <button className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 bg-accent text-accent-fg text-xs font-medium hover:bg-accent/90 transition-colors outline-none">
             <span>v{currentVersion?.version_number ?? latest.version_number}</span>
             {inFlightCfg && (
               <span
                 data-testid="version-status-indicator"
-                className="inline-flex items-center gap-1 text-[11px] text-white/90"
+                className="inline-flex items-center gap-1 text-[11px] text-accent-fg opacity-90"
                 title={`v${latest.version_number} — ${inFlightCfg.label}`}
               >
                 {inFlightCfg.icon}

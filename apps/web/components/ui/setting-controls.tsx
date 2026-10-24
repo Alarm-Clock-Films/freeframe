@@ -79,7 +79,7 @@ export function Segment<T extends string>({
           className={cn(
             'flex items-center justify-center px-3 py-1.5 text-xs transition-colors min-w-[36px] focus-visible:ring-inset',
             focusRing,
-            value === opt.value ? 'bg-accent text-text-inverse' : tones[tone].idle,
+            value === opt.value ? 'bg-accent text-accent-fg-inverse' : tones[tone].idle,
           )}
         >
           {opt.icon ?? opt.label}

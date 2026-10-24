@@ -177,7 +177,7 @@ function MentionDropdown({
             onSelect(user);
           }}
         >
-          <div className="h-6 w-6 rounded-full bg-accent flex items-center justify-center text-[10px] text-text-primary font-semibold shrink-0">
+          <div className="h-6 w-6 rounded-full bg-accent flex items-center justify-center text-[10px] text-accent-fg-primary font-semibold shrink-0">
             {user.name.charAt(0).toUpperCase()}
           </div>
           <div className="flex-1 text-left min-w-0">
@@ -701,7 +701,7 @@ export function CommentInput({
               <button
                 onClick={handleSubmit}
                 disabled={!body.trim() || submitting}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-text-primary hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-accent-fg-primary hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 title="Send (Enter)"
               >
                 {submitting ? (

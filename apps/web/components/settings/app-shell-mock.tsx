@@ -97,8 +97,8 @@ export function AppShellMock({ orgName, logoUrl, onLogoError }: MockProps) {
             {/* A real primary button, so the accent color is visible on the
                 surface it actually paints. */}
             <div className="flex h-7 items-center gap-1.5 rounded-md bg-accent px-2.5">
-              <Upload className="h-3.5 w-3.5 text-text-inverse" strokeWidth={2} />
-              <span className="text-xs font-medium text-text-inverse">Upload</span>
+              <Upload className="h-3.5 w-3.5 text-accent-fg-inverse" strokeWidth={2} />
+              <span className="text-xs font-medium text-accent-fg-inverse">Upload</span>
             </div>
             <Bell className="h-4 w-4 text-text-tertiary" strokeWidth={1.5} />
             <div className="h-6 w-6 rounded-full bg-bg-tertiary" />

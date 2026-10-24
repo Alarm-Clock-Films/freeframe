@@ -925,7 +925,7 @@ export function FolderShareViewer({
         <div className="flex items-center gap-2 shrink-0">
           {allowDownload && (
             <button
-              className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-white bg-accent hover:bg-accent-hover transition-colors"
+              className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-accent-fg bg-accent hover:bg-accent-hover transition-colors"
               onClick={() => handleDownloadAll(token, currentSubfolderId ?? null, shareSession)}
             >
               <Download className="h-3 w-3" />

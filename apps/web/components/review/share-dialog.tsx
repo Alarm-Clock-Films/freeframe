@@ -138,7 +138,7 @@ export function ShareDialog({
             <div className="p-2">
               <button
                 onClick={handleNewShareLink}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white hover:bg-accent/90 transition-colors"
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-fg hover:bg-accent/90 transition-colors"
               >
                 <Plus className="h-4 w-4" />
                 New Share Link

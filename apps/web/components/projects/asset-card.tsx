@@ -154,7 +154,7 @@ export function AssetCard({
             className={cn(
               'absolute top-2 left-2 h-5 w-5 rounded flex items-center justify-center transition-all',
               selected
-                ? 'bg-accent text-white'
+                ? 'bg-accent text-accent-fg'
                 : 'bg-black/40 text-white/60 [@media(hover:hover)]:text-transparent [@media(hover:hover)]:group-hover:text-white/60 backdrop-blur-sm',
             )}
           >
