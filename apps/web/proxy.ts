@@ -68,12 +68,13 @@ export const config = {
   matcher: [
     /*
      * Match all paths except:
+     * - _vercel (Web Analytics and Speed Insights scripts and endpoints)
      * - _next/static (static files)
      * - _next/image (image optimization)
      * - favicon.ico
      * - api routes
      * - public assets (images, fonts, etc.)
      */
-    '/((?!_next/static|_next/image|favicon\\.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff|woff2|ttf|otf)).*)',
+    '/((?!_vercel/|_next/static|_next/image|favicon\\.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff|woff2|ttf|otf)).*)',
   ],
 }

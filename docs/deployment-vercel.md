@@ -181,6 +181,27 @@ Every page also sends `X-Frame-Options: SAMEORIGIN`, `frame-ancestors 'self'`,
 and every API response sends `nosniff`, `X-Frame-Options: DENY` and a referrer
 policy (`apps/api/middleware/security_headers.py`).
 
+## Analytics and Speed Insights
+
+The web app includes [Vercel Web Analytics](https://vercel.com/docs/analytics)
+(page views and visitors) and [Speed Insights](https://vercel.com/docs/speed-insights)
+(Core Web Vitals from real visits). Each records data only once it is switched
+on for the project:
+
+1. **Project → Analytics → Enable**.
+2. **Project → Speed Insights → Enable**.
+3. Redeploy.
+
+Both load only on Vercel deployments (`VERCEL=1`); Docker and local builds
+never request their scripts. Share-link and invite tokens are removed from
+every URL before it is sent (`/share/[token]`, `/invite/[token]`), and query
+strings and fragments are dropped, so the dashboards can't be used to open
+shared content (`apps/web/lib/insights.ts`).
+
+Web Analytics needs no cookies; check the
+[Vercel docs](https://vercel.com/docs/analytics/privacy-policy) for current
+privacy details and plan limits.
+
 ## What is different on Vercel
 
 - **Live updates reconnect every few minutes.** A function ends at its maximum

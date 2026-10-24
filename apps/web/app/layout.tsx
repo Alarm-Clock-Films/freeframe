@@ -7,6 +7,8 @@ import { BrandingProvider } from "@/components/shared/branding-provider";
 import { getServerBranding } from "@/lib/branding-server";
 import { accentVars } from "@/lib/accent";
 import { withBasePath } from "@/lib/base-path";
+import { vercelInsightsEnabled } from "@/lib/insights";
+import { VercelInsights } from "@/components/shared/vercel-insights";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -92,6 +94,8 @@ export default async function RootLayout({
           <BrandingHead />
           <ToastProvider>{children}</ToastProvider>
         </BrandingProvider>
+        {/* Vercel Web Analytics and Speed Insights, on Vercel only (lib/insights.ts). */}
+        {vercelInsightsEnabled() && <VercelInsights />}
       </body>
     </html>
   );
