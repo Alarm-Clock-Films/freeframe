@@ -59,3 +59,27 @@ describe('focus outline flash', () => {
     expect(offenders).toEqual([])
   })
 })
+
+/**
+ * The text field's focus glow is meant to be the accent at 20%. It was written
+ * `focus:ring-accent/20`, but the accent is a bare var() colour and Tailwind's
+ * opacity modifier compiles to no CSS for those, so the ring fell back to
+ * Tailwind's default translucent blue whatever the brand colour.
+ */
+describe('Input focus ring colour', () => {
+  const ringColours = (el: HTMLElement) => el.className.split(/\s+/).filter((c) => /^focus:ring-(?!\d|inset|offset)/.test(c))
+
+  it('tints the ring with the accent, written so Tailwind emits it', () => {
+    render(<Input aria-label="Name" />)
+    expect(ringColours(screen.getByLabelText('Name'))).toEqual([
+      'focus:ring-[color:color-mix(in_srgb,var(--accent)_20%,transparent)]',
+    ])
+  })
+
+  it('uses the error colour instead, not as well, when the field has an error', () => {
+    render(<Input aria-label="Email" error="Required" />)
+    expect(ringColours(screen.getByLabelText('Email'))).toEqual([
+      'focus:ring-[color:color-mix(in_srgb,var(--status-error)_20%,transparent)]',
+    ])
+  })
+})
