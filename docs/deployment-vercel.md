@@ -170,9 +170,15 @@ custom domain) as an origin on the bucket yourself.
 - **Queues deliver at least once.** A task can occasionally run twice. The
   housekeeping and transcode tasks are safe to repeat; a repeated email task
   sends a duplicate email.
-- **Preview deployments** do not migrate the database by default, because a
-  preview usually shares production's database. With Neon branching per
-  preview, set `FREEFRAME_MIGRATE_ON_BUILD=1` for the Preview environment.
+- **Only `main` deploys from Git.** `vercel.json` turns off automatic
+  deployments for every other branch (`git.deploymentEnabled`), because a
+  preview would otherwise share production's database, or, with the
+  variables set for Production only, fail its build. If production moves to
+  another branch (such as `stable`), list that branch there instead.
+- **To turn previews back on**, give them their own database (Neon branching
+  per preview), Redis and `JWT_SECRET` for the Preview environment, set
+  `FREEFRAME_MIGRATE_ON_BUILD=1` there so each branch database is migrated,
+  and remove the `"*": false` rule. Preview builds do not migrate by default.
   Previews behind Vercel's deployment protection can't fetch branding on the
   server; it then loads in the browser, as before server rendering existed.
 - **`NEXT_PUBLIC_BASE_PATH`** (sub-path deployments) is not supported on

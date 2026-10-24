@@ -599,20 +599,37 @@ def delete_object(s3_key: str) -> None:
 
 
 def list_stale_multipart_uploads(cutoff):
-    """Return (key, upload_id) for in-progress multipart uploads initiated before `cutoff`."""
+    """Return (key, upload_id) for in-progress multipart uploads initiated before `cutoff`.
+
+    An upload listed without an `Initiated` time is left out: with no start time
+    there is no telling an abandoned upload from one a browser is still sending,
+    and aborting a live one destroys the parts already uploaded. Bunny Storage's
+    S3 API lists uploads that way; it expires unfinished multipart uploads itself
+    after 10 days, so skipping them does not leave them in the bucket for good.
+    """
     s3 = get_s3_client()
     stale = []
+    undated = 0
     kwargs = {"Bucket": settings.s3_bucket}
     while True:
         resp = s3.list_multipart_uploads(**kwargs)
         for up in resp.get("Uploads", []):
-            if up["Initiated"] < cutoff:
+            initiated = up.get("Initiated")
+            if initiated is None:
+                undated += 1
+                continue
+            if initiated < cutoff:
                 stale.append((up["Key"], up["UploadId"]))
         if resp.get("IsTruncated"):
             kwargs["KeyMarker"] = resp.get("NextKeyMarker")
             kwargs["UploadIdMarker"] = resp.get("NextUploadIdMarker")
         else:
             break
+    if undated:
+        logger.info(
+            "Left %d in-progress multipart upload(s) alone: storage listed them without "
+            "an Initiated time, so their age is unknown.", undated,
+        )
     return stale
 
 

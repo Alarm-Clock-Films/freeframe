@@ -243,11 +243,25 @@ def test_vercel_crons_mirror_the_beat_schedule():
 
 # ── deploy manifests ──────────────────────────────────────────────────────────
 
+def test_only_the_production_branch_deploys_from_git():
+    """Previews would share production's database, so other branches do not deploy.
+
+    The database, Redis and JWT_SECRET are set for Production only, so a preview
+    build of any other branch stops at the vercel-build check. Vercel deploys a
+    branch when any matching rule is true, so `main` must stay listed as true.
+    Moving production to another branch (e.g. `stable`) means listing it here.
+    """
+    cfg = json.loads((REPO_ROOT / "vercel.json").read_text())
+    enabled = cfg["git"]["deploymentEnabled"]
+    assert enabled["*"] is False
+    assert enabled["main"] is True
+
+
 def test_vercel_json_routes_api_to_the_python_service():
     cfg = json.loads((REPO_ROOT / "vercel.json").read_text())
     # Vercel's API rejects `projectSettings` in vercel.json, and rejects a
     # top-level `framework` alongside `services` (the preset is a project setting).
-    assert set(cfg) <= {"$schema", "services", "rewrites", "crons"}
+    assert set(cfg) <= {"$schema", "git", "services", "rewrites", "crons"}
     services = cfg["services"]
     # apps/web also has a Vite (vitest) config and a Dockerfile, so the
     # framework must be named or the build stops at "multiple frameworks".
