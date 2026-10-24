@@ -24,7 +24,7 @@ from ..services.downloads import (
 from .hls_proxy import create_hls_token
 from ..schemas.upload import (
     InitiateUploadRequest, InitiateUploadResponse,
-    ALLOWED_MIME_TYPES, mime_to_asset_type,
+    ALLOWED_MIME_TYPES, mime_to_asset_type, safe_raw_extension,
 )
 from ..services.storage import choose_part_size, upload_guard_error
 from ..services.versions import next_version_number
@@ -460,7 +460,10 @@ def initiate_new_version(
     db.add(version)
     db.flush()
 
-    ext = os.path.splitext(body.original_filename)[1].lower()
+    # Derived from the validated mime type, never the client filename: this ext
+    # lands in the presigned URL FFmpeg reads, and a client-chosen playlist
+    # extension would change the demuxer it picks. See safe_raw_extension.
+    ext = safe_raw_extension(body.original_filename, body.mime_type)
     s3_key = f"raw/{asset.project_id}/{asset_id}/{version.id}/original{ext}"
     try:
         upload_id = create_multipart_upload(s3_key, body.mime_type)
