@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 import jwt
 
 from ..config import settings
-from ..services.redis_service import get_redis
+from ..services.redis_service import count_in_window, get_redis
 
 # Limits per window — tuned for media-review workflows where a single folder
 # page can trigger 10+ paginated asset fetches plus SWR calls for project,
@@ -92,10 +92,7 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
                 ttl = r.ttl(key)
                 return False, max(ttl, 1)
 
-            pipe = r.pipeline()
-            pipe.incr(key)
-            pipe.expire(key, WINDOW_SECONDS, nx=True)
-            pipe.execute()
+            count_in_window(r, key, WINDOW_SECONDS)
             return True, 0
         except Exception:
             # Fail open — allow the request if Redis is unavailable

@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import uuid
@@ -20,7 +21,7 @@ from ..services.auth_service import (
 )
 from ..services.redis_service import (
     generate_magic_code, store_magic_code, verify_magic_code as redis_verify_magic_code,
-    MAGIC_CODE_EXPIRY_SECONDS,
+    reserve_magic_code_send, clear_magic_code_sends, MAGIC_CODE_EXPIRY_SECONDS,
 )
 from ..tasks.email_tasks import send_magic_code_email, send_invite_email
 from ..tasks.celery_app import send_task_safe
@@ -31,6 +32,7 @@ from ..middleware.rate_limit import rate_limit
 from ..services.botid import require_human
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+log = logging.getLogger(__name__)
 
 # One message for every magic-code failure. Reporting "too many attempts"
 # separately would tell a caller which addresses are registered (only a real
@@ -49,6 +51,12 @@ def _generate_invite_token() -> str:
     return secrets.token_urlsafe(48)
 
 
+def _mask_email(email: str) -> str:
+    """`pe***@example.com`: enough to recognise an address in the logs, not to harvest it."""
+    local, _, domain = email.partition("@")
+    return f"{local[:2]}***@{domain}"
+
+
 @router.post("/send-magic-code", response_model=SendMagicCodeResponse, dependencies=[Depends(rate_limit("send_magic_code", 5, 600)), Depends(require_human)])
 def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
     """
@@ -62,6 +70,16 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
     user = get_user_by_email(db, body.email)
 
     if not user:
+        return SendMagicCodeResponse(
+            message="Magic code sent to your email",
+            email=body.email,
+        )
+
+    # Per-address limit. Over it, answer as usual but send nothing, so the
+    # limit neither floods the inbox nor shows which addresses have accounts.
+    # The code already sent stays valid: it is not replaced.
+    if not reserve_magic_code_send(body.email):
+        log.warning("Sign-in code not sent: %s is over its per-address limit", _mask_email(body.email))
         return SendMagicCodeResponse(
             message="Magic code sent to your email",
             email=body.email,
@@ -102,6 +120,8 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
     success, error = redis_verify_magic_code(body.email, body.code)
     if not success:
         raise HTTPException(status_code=401, detail=MAGIC_CODE_FAILURE_DETAIL)
+    # Signed in: their next code request starts back at the shortest wait.
+    clear_magic_code_sends(body.email)
     
     # Mark email as verified
     user.email_verified = True
@@ -199,6 +219,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         or user.status == UserStatus.deactivated
     ):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    clear_magic_code_sends(body.email)
     return TokenResponse(
         access_token=create_access_token(str(user.id), token_version=user.token_version),
         refresh_token=create_refresh_token(str(user.id), token_version=user.token_version),
