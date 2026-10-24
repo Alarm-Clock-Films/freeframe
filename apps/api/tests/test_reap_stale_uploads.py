@@ -20,6 +20,24 @@ def test_list_stale_multipart_uploads_filters_by_initiated(monkeypatch):
     assert result == [("raw/old", "u1")]
 
 
+def test_list_stale_multipart_uploads_skips_uploads_without_a_start_time(monkeypatch):
+    """Bunny Storage lists uploads with no `Initiated`; that must not abort the listing,
+    and an upload of unknown age must never be reported stale (aborting a live one
+    destroys its parts)."""
+    now = datetime.now(timezone.utc)
+    fake = MagicMock()
+    fake.list_multipart_uploads.return_value = {
+        "Uploads": [
+            {"Key": "raw/undated", "UploadId": "u0"},
+            {"Key": "raw/old", "UploadId": "u1", "Initiated": now - timedelta(hours=48)},
+        ],
+        "IsTruncated": False,
+    }
+    monkeypatch.setattr(s3_service, "get_s3_client", lambda: fake)
+    result = s3_service.list_stale_multipart_uploads(now - timedelta(hours=24))
+    assert result == [("raw/old", "u1")]
+
+
 def test_delete_prefix_deletes_all_listed(monkeypatch):
     fake = MagicMock()
     fake.list_objects_v2.return_value = {
