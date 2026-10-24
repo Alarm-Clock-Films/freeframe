@@ -18,9 +18,11 @@ export function PoweredByBadge({
   showOrgName,
   showIcon = true,
 }: PoweredByBadgeProps) {
-  const { poweredByFreeframe, orgName } = useBranding()
+  const { poweredByFreeframe, orgName, known } = useBranding()
 
-  if (!poweredByFreeframe) return null
+  // Unknown means poweredByFreeframe is only the default's `true`; showing the
+  // credit then would flash it on instances that have turned it off.
+  if (!known || !poweredByFreeframe) return null
 
   const classes = cn(
     'inline-flex items-center gap-1.5 text-xs text-text-tertiary',

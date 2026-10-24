@@ -65,20 +65,77 @@ export function BrandingProvider({
   )
 }
 
+/** Branding values, plus whether they are the instance's real branding yet. */
+export interface ResolvedBranding extends BrandingValues {
+  /**
+   * False while nothing has said what this instance's branding is: the server
+   * could not supply it, this browser has no recent copy, and the browser's own
+   * fetch has not landed. The values are then only the built-in defaults, and
+   * anything that paints a logo, a name or the accent should hold off rather
+   * than show FreeFrame's and swap to the real brand a moment later.
+   */
+  known: boolean
+}
+
+const noSubscribe = () => () => {}
+
+/**
+ * False for the server render and the hydrating pass, true from then on.
+ * The copy of branding this browser saved last visit is only read after
+ * hydration: the server rendered without it, and the first client pass has to
+ * match that HTML.
+ */
+function useHydrated(): boolean {
+  return React.useSyncExternalStore(noSubscribe, () => true, () => false)
+}
+
 /**
  * Instance branding for anything that paints it.
  *
- * Prefers the store once it holds real data, and falls back to the server's
- * copy until then, which is what makes the server-rendered HTML carry the right
- * brand. Consumers that only display branding should use this; the settings
+ * In order of preference: the store once it holds a fresh server copy, the
+ * server's copy from this render, and the copy this browser saved on its last
+ * visit. With none of those, it returns the built-in defaults with `known:
+ * false`. Consumers that only display branding should use this; the settings
  * screen, which edits it, still talks to the store directly.
  */
-export function useBranding(): BrandingValues {
+export function useBranding(): ResolvedBranding {
   const server = React.useContext(ServerBrandingContext)
   const store = useBrandingStore()
+  const hydrated = useHydrated()
 
-  if (store.loaded) return store
-  return server ?? { ...HARDCODED_DEFAULTS }
+  if (store.loaded) return { ...pickValues(store), known: true }
+  if (server) return { ...server, known: true }
+  if (hydrated && store.cached) return { ...pickValues(store), known: true }
+  return { ...HARDCODED_DEFAULTS, known: false }
+}
+
+function pickValues(s: BrandingValues): BrandingValues {
+  return {
+    orgName: s.orgName,
+    orgLogoDark: s.orgLogoDark,
+    orgLogoLight: s.orgLogoLight,
+    faviconUrl: s.faviconUrl,
+    appleIconUrl: s.appleIconUrl,
+    loginLogoUrl: s.loginLogoUrl,
+    poweredByFreeframe: s.poweredByFreeframe,
+    primaryColor: s.primaryColor,
+    defaultLoginMode: s.defaultLoginMode,
+  }
+}
+
+/**
+ * Keeps its children hidden until the instance's branding is known, so a
+ * screen made of little but the brand (sign-in, setup, invite) appears once,
+ * branded, instead of showing FreeFrame's logo, name and colours first.
+ * `display: contents` leaves the parent's layout as if this were not here.
+ */
+export function BrandingGate({ children }: { children: React.ReactNode }) {
+  const { known } = useBranding()
+  return (
+    <div className={known ? 'contents' : 'contents invisible'} aria-busy={!known || undefined}>
+      {children}
+    </div>
+  )
 }
 
 /**

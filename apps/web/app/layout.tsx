@@ -5,7 +5,7 @@ import { ThemeInitializer } from "@/components/shared/theme-initializer";
 import { BrandingHead } from "@/components/shared/branding-head";
 import { BrandingProvider } from "@/components/shared/branding-provider";
 import { getServerBranding } from "@/lib/branding-server";
-import { accentVars } from "@/lib/accent";
+import { accentVars, ACCENT_CACHE_KEY } from "@/lib/accent";
 import { withBasePath } from "@/lib/base-path";
 import { vercelInsightsEnabled } from "@/lib/insights";
 import { VercelInsights } from "@/components/shared/vercel-insights";
@@ -79,12 +79,23 @@ export default async function RootLayout({
       lang="en"
       suppressHydrationWarning
       style={accent as React.CSSProperties | undefined}
+      data-ff-server-branding={branding ? "" : undefined}
     >
       <head>
         {/* Inline script to apply theme BEFORE paint — prevents flash */}
         <script
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var d=JSON.parse(localStorage.getItem('ff-theme')||'{}');var t=d.state&&d.state.theme||'dark';if(t==='system'){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','dark')}})()`,
+          }}
+        />
+        {/* When the server could not read branding, paint the accent this
+            browser saved last visit (ACCENT_CACHE_KEY) before
+            first paint, instead of the stock colour until the fetch lands.
+            Skipped when the server did supply branding: its accent, or its
+            lack of one, is already on <html> and is the current truth. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var r=document.documentElement;if(r.hasAttribute('data-ff-server-branding'))return;var v=JSON.parse(localStorage.getItem(${JSON.stringify(ACCENT_CACHE_KEY)})||'null');if(v&&typeof v==='object')for(var k in v)if(k.indexOf('--')===0)r.style.setProperty(k,String(v[k]))}catch(e){}})()`,
           }}
         />
         {/* The icon the browser shows while the page is still loading. Carries

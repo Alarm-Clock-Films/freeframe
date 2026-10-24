@@ -1,6 +1,7 @@
 import type { Metadata } from "next"
 import { AuthBrandingHeader } from "@/components/auth/auth-branding-header"
 import { getServerBranding } from "@/lib/branding-server"
+import { BrandingGate } from "@/components/shared/branding-provider"
 
 // A static "FreeFrame — Auth" here overrode the root layout's title, so the
 // sign-in tab named the product no matter how the instance was branded. The
@@ -18,23 +19,27 @@ export default function AuthLayout({
 }) {
   return (
     <div className="relative min-h-screen bg-bg-primary flex flex-col items-center justify-center px-4">
-      {/* Subtle radial glow */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 h-[600px] w-[600px] rounded-full bg-accent/[0.04] blur-[120px]" />
-      </div>
+      {/* Hidden until branding is known: these screens are mostly the brand,
+          so they appear once, branded, rather than as FreeFrame first. */}
+      <BrandingGate>
+        {/* Subtle radial glow */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute left-1/2 top-1/3 -translate-x-1/2 -translate-y-1/2 h-[600px] w-[600px] rounded-full bg-accent/[0.04] blur-[120px]" />
+        </div>
 
-      {/* Branding header — shown on every auth screen (login, setup, invite) */}
-      <AuthBrandingHeader />
+        {/* Branding header — shown on every auth screen (login, setup, invite) */}
+        <AuthBrandingHeader />
 
-      {/* Card */}
-      <div className="relative w-full max-w-sm rounded-xl border border-border bg-bg-secondary/50 backdrop-blur-sm p-6 shadow-xl animate-fade-in">
-        {children}
-      </div>
+        {/* Card */}
+        <div className="relative w-full max-w-sm rounded-xl border border-border bg-bg-secondary/50 backdrop-blur-sm p-6 shadow-xl animate-fade-in">
+          {children}
+        </div>
 
-      {/* Footer */}
-      <p className="relative mt-8 text-2xs text-text-tertiary">
-        Collaborative media review &amp; approval
-      </p>
+        {/* Footer */}
+        <p className="relative mt-8 text-2xs text-text-tertiary">
+          Collaborative media review &amp; approval
+        </p>
+      </BrandingGate>
     </div>
   )
 }

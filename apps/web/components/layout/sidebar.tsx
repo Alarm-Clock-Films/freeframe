@@ -54,7 +54,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   // The signed-in account's uploads only, though another's may still be running.
   const activeUploads = useUploadStore((s) => visibleFiles(s).filter(isOnItsWay).length)
   const { unreadCount, fetchNotifications } = useNotificationStore()
-  const { orgName, orgLogoDark, orgLogoLight } = useBranding()
+  const { orgName, orgLogoDark, orgLogoLight, known: brandingKnown } = useBranding()
   // Resolved, not the raw preference: 'system' is neither 'light' nor 'dark',
   // so comparing it directly handed a system-light viewer the dark-background
   // logo on a light page.
@@ -108,7 +108,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             collapsed ? 'justify-center px-0' : 'px-4 gap-2.5',
           )}
         >
-          {customLogo ? (
+          {!brandingKnown ? (
+            // Same footprint, nothing painted: not FreeFrame's mark before the real one.
+            <div className="h-7 w-7 shrink-0" aria-hidden />
+          ) : customLogo ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={customLogo}
@@ -124,7 +127,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           )}
           {!collapsed && (
             <span className="text-sm font-semibold text-text-primary tracking-tight truncate">
-              {orgName}
+              {brandingKnown ? orgName : null}
             </span>
           )}
         </div>

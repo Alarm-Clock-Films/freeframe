@@ -44,6 +44,12 @@ interface BrandingState extends BrandingValues {
   brandingFetchedAt: number | null
   loaded: boolean
   loading: boolean
+  /**
+   * The values rehydrated from this browser's last visit are a complete, usable
+   * copy of the instance's branding: they came from the server, recently enough
+   * that the signed logo URLs still work. Never persisted itself.
+   */
+  cached: boolean
 
   setOrgName: (name: string) => void
   setOrgLogoDark: (url: string | null) => void
@@ -54,6 +60,7 @@ interface BrandingState extends BrandingValues {
   setPoweredByFreeframe: (value: boolean) => void
   setPrimaryColor: (color: string | null) => void
   setDefaultLoginMode: (mode: LoginMode) => void
+  setCached: (value: boolean) => void
   fetchBranding: () => Promise<void>
   syncBranding: (data: InstanceBranding) => void
 }
@@ -102,6 +109,11 @@ export const HARDCODED_DEFAULTS = {
 // broken image, so treat anything past the margin as unusable until the refetch lands.
 const LOGO_URL_MAX_AGE_MS = 45 * 60 * 1000
 
+// Until branding is known the auth screens stay hidden rather than painting the
+// FreeFrame defaults, so a hung API must not hold that forever. Past this the
+// fetch gives up and the defaults are shown, as they would be on any failure.
+const FETCH_TIMEOUT_MS = 8000
+
 export const useBrandingStore = create<BrandingState>()(
   persist(
     (set, get) => ({
@@ -109,6 +121,7 @@ export const useBrandingStore = create<BrandingState>()(
       brandingFetchedAt: null,
       loaded: false,
       loading: false,
+      cached: false,
 
       setOrgName: (name) => set({ orgName: name }),
       setOrgLogoDark: (url) => set({ orgLogoDark: url }),
@@ -119,6 +132,7 @@ export const useBrandingStore = create<BrandingState>()(
       setPoweredByFreeframe: (value) => set({ poweredByFreeframe: value }),
       setPrimaryColor: (color) => set({ primaryColor: color }),
       setDefaultLoginMode: (mode) => set({ defaultLoginMode: mode }),
+      setCached: (value) => set({ cached: value }),
 
       syncBranding: (data: InstanceBranding) => {
         set({
@@ -132,7 +146,9 @@ export const useBrandingStore = create<BrandingState>()(
       fetchBranding: async () => {
         try {
           set({ loading: true })
-          const res = await fetch(`${API_URL}/instance/branding`)
+          const res = await fetch(`${API_URL}/instance/branding`, {
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          })
           if (!res.ok) throw new Error('Failed to fetch branding')
           const data: InstanceBranding = await res.json()
           get().syncBranding(data)
@@ -149,6 +165,7 @@ export const useBrandingStore = create<BrandingState>()(
         brandingFetchedAt: null,
         loaded: false,
         loading: false,
+        cached: false,
       }),
       partialize: (state) => ({
         orgName: state.orgName,
@@ -165,7 +182,10 @@ export const useBrandingStore = create<BrandingState>()(
       onRehydrateStorage: () => (state) => {
         if (!state) return
         const fetchedAt = state.brandingFetchedAt
-        if (fetchedAt && Date.now() - fetchedAt < LOGO_URL_MAX_AGE_MS) return
+        if (fetchedAt && Date.now() - fetchedAt < LOGO_URL_MAX_AGE_MS) {
+          state.setCached(true)
+          return
+        }
         // Signed too long ago (or from a build that didn't record when) — drop the
         // URLs so the default marks render until fetchBranding() signs fresh ones.
         state.setOrgLogoDark(null)

@@ -139,6 +139,7 @@ vi.mock('@/components/review/compare/compare-overlay', () => ({ CompareOverlay: 
 
 import ReviewPage from '../page'
 import { ToastProvider } from '@/components/shared/toast'
+import { useBrandingStore } from '@/stores/branding-store'
 
 // Next 16 hands route params to the page as a promise that it unwraps with
 // `use()`. A promise that already carries `status` and `value` is read
@@ -167,6 +168,9 @@ beforeEach(() => {
   swrKeys.length = 0
   viewState.sortKey = 'custom'
   viewState.sortDirection = 'asc'
+  // Branding has loaded, with the credit on: the badge only renders once the
+  // instance's branding is known, so it never flashes on a white-labelled one.
+  useBrandingStore.setState({ loaded: true, poweredByFreeframe: true })
 })
 
 describe('the credit and the asset navigator in the top bar', () => {

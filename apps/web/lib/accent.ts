@@ -15,6 +15,13 @@
  *  left those surfaces on the product's stock blue. */
 export const ACCENT_VAR_NAMES = ['--accent', '--accent-hover', '--accent-muted', '--border-focus', '--accent-fg'] as const
 
+/**
+ * localStorage key for the accent variables last applied (BrandingHead writes
+ * it). The root layout's inline script reads it to paint a returning visitor's
+ * accent before first paint when the server could not supply branding.
+ */
+export const ACCENT_CACHE_KEY = 'ff-accent'
+
 /** The two text colours an accent surface can carry. */
 export const ACCENT_TEXT_DARK = '#18181b'
 export const ACCENT_TEXT_LIGHT = '#ffffff'
