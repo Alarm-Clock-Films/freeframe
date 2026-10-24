@@ -47,11 +47,19 @@ limiting; it is no longer the Celery broker on Vercel.
 
 ## 1. Create the project
 
-1. Import the repository in Vercel. Leave **Root Directory** at the
-   repository root and set **Framework Preset** to **Services** if Vercel
-   has not picked it already. `vercel.json` declares the `web` (Next.js) and
-   `api` (FastAPI) services; the preset itself is a project setting and
-   cannot be set from `vercel.json`.
+1. Import the repository in Vercel and, in **Build and Deployment**
+   settings, set:
+   - **Root Directory**: empty (the repository root). On import Vercel may
+     suggest `apps/web` because it finds a Next.js app there; do not accept
+     that, or `vercel.json` is ignored and only the web app is built (no API,
+     no worker, no crons).
+   - **Framework Preset**: **Services**. It is a project setting and cannot
+     be set from `vercel.json`, which declares the `web` (Next.js) and `api`
+     (FastAPI) services.
+
+   A correct build log prefixes its lines with `[vc:service:web]` and
+   `[vc:service:api]`. If you see `turbo run build` or
+   `NEXT_OUTPUT_DIR_MISSING` instead, the Root Directory is still `apps/web`.
 2. Set the **Production Branch**. For production use the `stable` branch once
    a release that includes this guide is on it (see
    [Release channels](../README.md#release-channels)).

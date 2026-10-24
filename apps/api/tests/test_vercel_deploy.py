@@ -214,7 +214,10 @@ def test_vercel_json_routes_api_to_the_python_service():
     services = cfg["services"]
     # apps/web also has a Vite (vitest) config and a Dockerfile, so the
     # framework must be named or the build stops at "multiple frameworks".
-    assert services["web"] == {"root": "apps/web/", "framework": "nextjs"}
+    # The build command is pinned because Vercel's Turborepo detection (the
+    # root has a turbo.json) otherwise runs `turbo run build`, which finds no
+    # workspace package here and builds nothing.
+    assert services["web"] == {"root": "apps/web/", "framework": "nextjs", "buildCommand": "pnpm run build"}
     assert services["api"]["entrypoint"] == "pyproject.toml"
     # The API's routes have no /api prefix (Traefik strips it in Docker); the
     # service rewrite strips it here.
