@@ -55,6 +55,27 @@ describe('confirmHuman', () => {
 })
 
 describe('next.config', () => {
+  it('adds the BotID proxy rewrites on Vercel only', async () => {
+    delete process.env.VERCEL
+    expect(loadNextConfig().rewrites).toBeUndefined()
+
+    process.env.VERCEL = '1'
+    const { BOTID_PROXY_PREFIX } = await import('../../proxy')
+    const rewrites = await loadNextConfig().rewrites()
+    const list = Array.isArray(rewrites) ? rewrites : rewrites.beforeFiles
+    const sources = list.map((r: { source: string }) => r.source)
+    expect(sources.some((s: string) => s.startsWith(BOTID_PROXY_PREFIX))).toBe(true)
+    for (const r of list) expect(r.destination).toMatch(/^https:\/\/api\.vercel\.com\/bot-protection\//)
+  })
+
+  it('lets signed-out visitors reach BotID\'s script', async () => {
+    const { NextRequest } = await import('next/server')
+    const { proxy, BOTID_PROXY_PREFIX } = await import('../../proxy')
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ needs_setup: false }))))
+    const res = await proxy(new NextRequest(`https://frame.example.com${BOTID_PROXY_PREFIX}a-4-a/c.js`))
+    expect(res.headers.get('location')).toBeNull()
+  })
+
   it('turns BotID on only in Vercel builds', () => {
     delete process.env.VERCEL
     expect(loadNextConfig().env.NEXT_PUBLIC_BOTID).toBeUndefined()

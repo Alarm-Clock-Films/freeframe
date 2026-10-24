@@ -62,4 +62,9 @@ const nextConfig = {
   },
 }
 
-module.exports = nextConfig
+// BotID's browser script and its requests are served from this domain and
+// proxied to Vercel; withBotId adds those rewrites. Without them the script
+// 404s, BotID cannot classify anyone as a person, and with
+// BOTID_COOKIE_SECRET set every sign-in would be refused. Vercel only: Docker
+// and local builds never load BotID (lib/botid.ts).
+module.exports = onVercel ? require('botid/next/config').withBotId(nextConfig) : nextConfig
