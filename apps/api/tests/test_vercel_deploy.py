@@ -427,3 +427,31 @@ def test_sandbox_runner_runs_the_task_eagerly(monkeypatch):
     result.failed.return_value = True
     with patch.object(transcode_tasks.process_asset, "apply", return_value=result):
         assert sandbox_runner.run({"task": "process_asset", "args": ["a", "v"]}) == 1
+
+
+def test_vercel_build_names_missing_variables_before_anything_else(monkeypatch, capsys):
+    from apps.api.scripts import vercel_build
+
+    for name in ("DATABASE_URL", "POSTGRES_URL", "REDIS_URL", "KV_URL", "JWT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("VERCEL_ENV", "preview")  # even where migrations are skipped
+    monkeypatch.setenv("KV_URL", "rediss://upstash:6379")
+    with patch.object(vercel_build.subprocess, "call") as call:
+        assert vercel_build.main() == 1
+    call.assert_not_called()
+    err = capsys.readouterr().err
+    assert "DATABASE_URL or POSTGRES_URL" in err and "JWT_SECRET" in err
+    assert "REDIS_URL" not in err  # satisfied by KV_URL
+
+
+def test_vercel_build_fails_when_the_migration_fails(monkeypatch):
+    from apps.api.scripts import vercel_build
+
+    monkeypatch.setenv("VERCEL_ENV", "production")
+    monkeypatch.delenv("FREEFRAME_MIGRATE_ON_BUILD", raising=False)
+    for name, value in (("DATABASE_URL", "postgresql://u:p@db/x"), ("REDIS_URL", "redis://r"), ("JWT_SECRET", "j")):
+        monkeypatch.setenv(name, value)
+    with patch.object(vercel_build.subprocess, "call", return_value=1):
+        assert vercel_build.main() == 1
+    with patch.object(vercel_build.subprocess, "call", return_value=0):
+        assert vercel_build.main() == 0

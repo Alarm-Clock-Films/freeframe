@@ -14,6 +14,10 @@ Migrations run only where they are wanted:
 
 A failed migration fails the build, so a deployment never goes live against a
 schema it does not expect.
+
+Before any of that, the build checks the variables the API cannot load
+without. Vercel imports the app during the build (to find the Celery queues),
+so a missing one would otherwise fail later with a long traceback.
 """
 import os
 import subprocess
@@ -32,16 +36,37 @@ def should_migrate(environ: dict) -> bool:
     return environ.get("VERCEL_ENV") == "production"
 
 
+# Each entry is satisfied by any one of its names.
+REQUIRED_ENV = (
+    ("DATABASE_URL", "POSTGRES_URL"),
+    ("REDIS_URL", "KV_URL"),
+    ("JWT_SECRET",),
+)
+
+
+def missing_env(environ: dict) -> list[str]:
+    return [" or ".join(names) for names in REQUIRED_ENV
+            if not any((environ.get(n) or "").strip() for n in names)]
+
+
 def main() -> int:
+    missing = missing_env(dict(os.environ))
+    if missing:
+        print(
+            "vercel-build: ERROR: these environment variables are not set for this "
+            f"environment ({os.environ.get('VERCEL_ENV') or 'unknown'}): {', '.join(missing)}.\n"
+            "Add them in Project > Settings > Environment Variables (Postgres and Redis come "
+            "from the Neon and Upstash integrations) and redeploy. "
+            "See docs/deployment-vercel.md, step 3.",
+            file=sys.stderr,
+        )
+        return 1
     if not should_migrate(dict(os.environ)):
         print(
             f"vercel-build: skipping migrations (VERCEL_ENV={os.environ.get('VERCEL_ENV')!r}; "
             "set FREEFRAME_MIGRATE_ON_BUILD=1 to run them on this build)"
         )
         return 0
-    if not (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")):
-        print("vercel-build: DATABASE_URL (or POSTGRES_URL) is not set; cannot migrate", file=sys.stderr)
-        return 1
     print("vercel-build: alembic upgrade head")
     return subprocess.call([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=API_DIR)
 

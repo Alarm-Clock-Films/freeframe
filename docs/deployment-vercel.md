@@ -57,6 +57,10 @@ limiting; it is no longer the Celery broker on Vercel.
      be set from `vercel.json`, which declares the `web` (Next.js) and `api`
      (FastAPI) services.
 
+   Finish steps 2 and 3 before the first deploy: the API build checks for
+   `DATABASE_URL`, `REDIS_URL` and `JWT_SECRET` (or their Neon/Upstash
+   equivalents) and stops with a message naming any that are missing.
+
    A correct build log prefixes its lines with `[vc:service:web]` and
    `[vc:service:api]`. If you see `turbo run build` or
    `NEXT_OUTPUT_DIR_MISSING` instead, the Root Directory is still `apps/web`.
