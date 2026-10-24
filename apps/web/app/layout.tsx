@@ -34,6 +34,17 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
+// Render every page per request rather than once at build. The branding read
+// below was the only data this layout needs, and with nothing else marking the
+// routes dynamic Next prerendered them at `next build` -- where no API is
+// listening, so the HTML was baked with the FreeFrame defaults. Every visitor
+// then saw the FreeFrame logo, name and accent until the browser's own fetch
+// replaced them. (ISR regeneration did not save it: it serves the stale page
+// first, and a page left idle could carry logo URLs whose signatures expired.)
+// The branding fetch itself is still cached for 60s, so this costs no extra
+// round trip to the API per page view.
+export const dynamic = "force-dynamic";
+
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,

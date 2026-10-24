@@ -19,13 +19,20 @@ import type { InstanceBranding } from '@/stores/branding-store'
  */
 /**
  * On Vercel, NEXT_PUBLIC_API_URL is the relative `/api`, which a server-side
- * fetch cannot resolve. The API answers on the same deployment, whose host
- * Vercel exposes as VERCEL_URL. A deployment behind Vercel's deployment
- * protection refuses that fetch, which only means branding loads client-side.
+ * fetch cannot resolve. The API answers on the same deployment.
+ *
+ * In production that is reached through the production domain, not VERCEL_URL:
+ * VERCEL_URL is the per-deployment `*.vercel.app` address, which Vercel's
+ * default (Standard) deployment protection puts behind a login. A fetch to it
+ * comes back 401, branding falls back to the browser, and the defaults flash
+ * on every page load. Production domains are never behind that protection.
+ * Preview deployments have no production domain of their own, so they keep
+ * VERCEL_URL; a protected preview only means branding loads client-side.
  */
-const VERCEL_API_URL = process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}/api`
-  : undefined
+const VERCEL_HOST =
+  (process.env.VERCEL_ENV === 'production' && process.env.VERCEL_PROJECT_PRODUCTION_URL) ||
+  process.env.VERCEL_URL
+const VERCEL_API_URL = VERCEL_HOST ? `https://${VERCEL_HOST}/api` : undefined
 
 const INTERNAL_API_URL =
   process.env.API_INTERNAL_URL ||
