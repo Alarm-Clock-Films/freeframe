@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 from pydantic import AliasChoices, Field, field_validator, model_validator
@@ -149,6 +150,14 @@ class Settings(BaseSettings):
     # to /internal/cron/*. Unset disables those endpoints.
     cron_secret: str | None = None
 
+    # Vercel BotID. The web app's /botid/verify route runs BotID when a sign-in
+    # or share-password form loads and, for a human visitor, sets a short-lived
+    # cookie signed with this key; the API then requires that cookie on the
+    # endpoints in services/botid.py. 32 random bytes in hex
+    # (`openssl rand -hex 32`), set for the web and API alike. Unset turns the
+    # check off (Docker, local development).
+    botid_cookie_secret: str | None = None
+
     # Worker concurrency settings
     transcoding_concurrency: int = 2  # Number of concurrent video transcoding jobs
     email_concurrency: int = 2  # Number of concurrent email sending jobs
@@ -188,6 +197,25 @@ class Settings(BaseSettings):
             raise ValueError(
                 "JWT_SECRET is empty. Set it to a long random string, for "
                 "example the output of `openssl rand -hex 64`."
+            )
+        return value
+
+    @field_validator("botid_cookie_secret")
+    @classmethod
+    def _check_botid_cookie_secret(cls, value: str | None) -> str | None:
+        """Blank means off; anything else must be 32 bytes of hex.
+
+        The web app signs with the same rule, so a malformed key would make it
+        refuse to issue cookies while the API demanded them, and every sign-in
+        would fail. Failing at startup names the problem instead.
+        """
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            raise ValueError(
+                "BOTID_COOKIE_SECRET must be 32 random bytes in hex (64 characters), "
+                "for example the output of `openssl rand -hex 32`."
             )
         return value
 

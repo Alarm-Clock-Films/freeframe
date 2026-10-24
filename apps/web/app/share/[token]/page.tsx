@@ -8,6 +8,7 @@ import {
   Loader2,
 } from 'lucide-react'
 import { withBasePath } from '@/lib/base-path'
+import { confirmHuman } from '@/lib/botid'
 import { resolveBrandingLogo } from '@/lib/branding-logo'
 import { Button } from '@/components/ui/button'
 import { FolderShareViewer } from '@/components/share/folder-share-viewer'
@@ -81,6 +82,8 @@ async function fetchShareInfo(
   if (password) {
     headers['Content-Type'] = 'application/json'
     const body = JSON.stringify({ password, log_open: !!logOpen })
+    // Vercel BotID guards this endpoint against password guessing.
+    await confirmHuman()
     const resp = await fetch(`${API_URL}/share/${token}/verify`, {
       method: 'POST',
       headers,
@@ -98,6 +101,11 @@ async function fetchShareInfo(
           .catch(() => null)
         if (typeof detail === 'string' && detail.includes('Authentication required')) {
           return { requires_auth: true }
+        }
+        // BotID could not confirm a person typed it: say so rather than
+        // "Incorrect password", which would send them retyping it.
+        if (detail?.code === 'botid_required' && typeof detail.message === 'string') {
+          return { requires_password: true, error: detail.message }
         }
         return { requires_password: true, error: 'Incorrect password' }
       }

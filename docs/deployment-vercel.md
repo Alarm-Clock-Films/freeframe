@@ -122,6 +122,7 @@ which `.gitignore` already excludes.
 | `S3_STORAGE`, `S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | yes | As in [External S3 Storage](deployment.md#external-s3-storage). For R2 and other non-AWS stores use `S3_STORAGE=minio`. |
 | `MAIL_PROVIDER` and the `SMTP_*` / `AWS_MAIL_*` settings | yes | As in [External SMTP](deployment.md#external-smtp). |
 | `CRON_SECRET` | yes | A long random string. Vercel Cron sends it; without it `/internal/cron/*` is off. |
+| `BOTID_COOKIE_SECRET` | recommended | Turns on [Vercel BotID](https://vercel.com/docs/botid) for sign-in and share-link passwords. `openssl rand -hex 32`, stored as a Secret for Production. See [Bot protection](#bot-protection). |
 | `TRANSCODE_RUNNER` | yes | `vercel_sandbox` |
 | `VERCEL_SANDBOX_IMAGE` | yes | The image reference from step 2. |
 | `DISABLE_DOCS` | recommended | `true` hides `/api/docs` in production. |
@@ -149,6 +150,36 @@ your storage provider ignores that API, allow your Vercel domain (and any
 custom domain) as an origin on the bucket yourself.
 
 ---
+
+## Bot protection
+
+With `BOTID_COOKIE_SECRET` set, the sign-in endpoints (send code, verify code,
+password login) and the share-link password check accept a request only from a
+browser [Vercel BotID](https://vercel.com/docs/botid) has classified as a person
+in the last five minutes. No CAPTCHA is shown.
+
+BotID's server check runs only in JavaScript, and the API here is Python, so it
+follows Vercel's [verify on page load](https://vercel.com/docs/botid/verify-on-page-load)
+pattern: just before one of those requests, the page calls the web app's
+`/botid/verify` route, which runs the check and sets a five-minute signed
+cookie (`__Host-botid-verification`) that the API then verifies
+(`apps/api/services/botid.py`). The existing rate limits still apply.
+
+A request the API refuses gets `403` with code `botid_required`, and the form
+shows "We couldn't confirm this request came from a person". If that appears
+for real visitors, check that `BOTID_COOKIE_SECRET` is set for Production and
+the deployment was redeployed after setting it. Removing the variable and
+redeploying turns the check off.
+
+The check uses BotID's Basic level, included on every plan. Deep Analysis
+(Pro and Enterprise, billed per check) is switched on under **Firewall → Rules**,
+and `checkLevel` in `instrumentation-client.ts` and `app/botid/verify/route.ts`
+must then be changed to `deepAnalysis` in both places.
+
+Every page also sends `X-Frame-Options: SAMEORIGIN`, `frame-ancestors 'self'`,
+`nosniff`, a referrer policy and a permissions policy (`apps/web/next.config.js`),
+and every API response sends `nosniff`, `X-Frame-Options: DENY` and a referrer
+policy (`apps/api/middleware/security_headers.py`).
 
 ## What is different on Vercel
 

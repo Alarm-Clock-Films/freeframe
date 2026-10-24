@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, KeyboardEvent, ClipboardEvent } from 'reac
 import { useRouter } from 'next/navigation'
 import { api, ApiError } from '@/lib/api'
 import { setTokens } from '@/lib/auth'
+import { confirmHuman } from '@/lib/botid'
 import { useAuthStore } from '@/stores/auth-store'
 import { useBranding } from '@/components/shared/branding-provider'
 import { Button } from '@/components/ui/button'
@@ -66,6 +67,7 @@ export function LoginForm() {
 
     setLoading(true)
     try {
+      await confirmHuman()
       await api.post('/auth/send-magic-code', { email })
       setStep('code')
     } catch (err) {
@@ -125,6 +127,7 @@ export function LoginForm() {
     setGeneralError('')
     setLoading(true)
     try {
+      await confirmHuman()
       const res = await api.post<VerifyCodeResponse>('/auth/verify-magic-code', {
         email,
         code: codeStr,
@@ -224,6 +227,7 @@ export function LoginForm() {
 
     setLoading(true)
     try {
+      await confirmHuman()
       const res = await api.post<AuthTokens>('/auth/login', {
         email: classicEmail,
         password: classicPassword,

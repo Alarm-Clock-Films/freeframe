@@ -3,7 +3,12 @@ import type { NextRequest } from 'next/server'
 import { withBasePath } from './lib/base-path'
 
 const PUBLIC_ROUTES = ['/login', '/setup']
-const PUBLIC_PREFIXES = ['/invite/', '/share/']
+// /botid/ is called from the login and share pages, before anyone is signed in.
+// BOTID_PROXY_PREFIX is where BotID's own script and requests are served
+// (rewritten to Vercel by withBotId in next.config.js); a redirect to /login
+// there would break the check on the login page itself.
+export const BOTID_PROXY_PREFIX = '/149e9513-01fa-4fb0-aad4-566afd725d1b/'
+const PUBLIC_PREFIXES = ['/invite/', '/share/', '/botid/', BOTID_PROXY_PREFIX]
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
