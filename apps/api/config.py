@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
+    # Sign-in code emails per address, whoever asks and from wherever. The
+    # per-IP limit on /auth/send-magic-code does not stop someone switching
+    # networks from flooding a known address, or using up the mail provider's
+    # daily quota for everyone. A request over any of these gets the usual
+    # "code sent" answer but no email, and the address's last code stays valid.
+    # 0 turns that limit off.
+    magic_code_min_interval_seconds: int = Field(60, ge=0)
+    magic_code_max_per_hour: int = Field(5, ge=0)
+    magic_code_max_per_day: int = Field(10, ge=0)
     # Live event streams (GET /events/{project_id}). Authorization is checked
     # again for as long as a stream stays open, not only when it connects, so a
     # subscriber who loses access (removed from the project, deactivated, token

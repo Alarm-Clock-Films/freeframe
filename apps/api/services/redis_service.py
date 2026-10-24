@@ -138,6 +138,52 @@ def check_rate_limit(
         return True, 0
 
 
+# ── Per-address limit on sign-in code emails ──────────────────────────────────
+
+MAGIC_CODE_SEND_PREFIX = "magic_code_sends:"
+
+
+def reserve_magic_code_send(email: str) -> bool:
+    """Count one sign-in code email to `email` against that address's limits.
+
+    Returns False when the address is over a limit, and then no email may be
+    sent. Unlike the per-IP limit this holds however many networks the
+    requests come from, so a known address cannot be flooded, and the mail
+    provider's daily quota cannot be spent on one address.
+
+    The limits (config.magic_code_*) are a minimum gap between emails and caps
+    per hour and per day; 0 turns one off. Each window starts with the first
+    email in it. Every request that clears the gap counts, including one then
+    refused by a cap, so retrying in a loop does not help.
+
+    Fails open, as check_rate_limit does: without Redis no code can be stored
+    either, and the request fails there with an error rather than silently
+    sending nothing.
+    """
+    address = email.strip().lower()
+    try:
+        r = get_redis()
+        gap = settings.magic_code_min_interval_seconds
+        if gap > 0 and not r.set(f"{MAGIC_CODE_SEND_PREFIX}gap:{address}", "1", nx=True, ex=gap):
+            return False
+        for window, limit in (
+            (3600, settings.magic_code_max_per_hour),
+            (86400, settings.magic_code_max_per_day),
+        ):
+            if limit <= 0:
+                continue
+            key = f"{MAGIC_CODE_SEND_PREFIX}{window}:{address}"
+            pipe = r.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, window, nx=True)
+            count, _ = pipe.execute()
+            if count > limit:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - fail open; see the docstring
+        return True
+
+
 # ── Share link password sessions ──────────────────────────────────────────────
 
 SHARE_SESSION_PREFIX = "share_session:"
