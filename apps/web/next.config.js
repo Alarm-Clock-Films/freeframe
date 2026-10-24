@@ -15,11 +15,40 @@ const env = {}
 if (onVercel && !process.env.NEXT_PUBLIC_API_URL) {
   env.NEXT_PUBLIC_API_URL = '/api'
 }
+// Vercel BotID works only on Vercel (lib/botid.ts). The API enforces it only
+// when BOTID_COOKIE_SECRET is set, so this alone changes nothing for sign-in.
+if (onVercel) {
+  env.NEXT_PUBLIC_BOTID = '1'
+}
+
+/**
+ * Security headers on every page. The API sets its own
+ * (apps/api/middleware/security_headers.py).
+ *
+ * Framing is limited to this origin rather than denied: nothing embeds
+ * FreeFrame elsewhere, and same-origin frames keep working if a view uses one.
+ * There is no full Content-Security-Policy: the player loads media from the
+ * storage bucket and HLS through the API, and a policy that misses one of
+ * those breaks playback. frame-ancestors is the part that stops clickjacking.
+ * Vercel adds Strict-Transport-Security on its own domains and on custom
+ * domains it serves.
+ */
+const securityHeaders = [
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+  { key: 'Content-Security-Policy', value: "frame-ancestors 'self'" },
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  // Features FreeFrame never uses. Clipboard and fullscreen stay allowed.
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()' },
+]
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   basePath,
   env,
+  async headers() {
+    return [{ source: '/:path*', headers: securityHeaders }]
+  },
   // The Docker images run the standalone server; Vercel builds its own output.
   output: onVercel ? undefined : 'standalone',
   images: {

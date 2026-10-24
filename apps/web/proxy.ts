@@ -3,7 +3,8 @@ import type { NextRequest } from 'next/server'
 import { withBasePath } from './lib/base-path'
 
 const PUBLIC_ROUTES = ['/login', '/setup']
-const PUBLIC_PREFIXES = ['/invite/', '/share/']
+// /botid/ is called from the login and share pages, before anyone is signed in.
+const PUBLIC_PREFIXES = ['/invite/', '/share/', '/botid/']
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 

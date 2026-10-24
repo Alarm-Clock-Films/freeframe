@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..middleware.auth import get_current_user, get_optional_user
 from ..middleware.rate_limit import rate_limit
+from ..services.botid import require_human
 from ..models.user import User
 from ..models.asset import Asset
 from ..models.folder import Folder
@@ -405,7 +406,7 @@ def validate_share_link_endpoint(
 @router.post(
     "/share/{token}/verify",
     response_model=ShareLinkValidateResponse,
-    dependencies=[Depends(rate_limit("share_verify", 30, 60))],
+    dependencies=[Depends(rate_limit("share_verify", 30, 60)), Depends(require_human)],
 )
 def verify_share_link_password(
     token: str,
