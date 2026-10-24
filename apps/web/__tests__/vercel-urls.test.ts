@@ -33,6 +33,34 @@ describe('server-side branding on Vercel', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://freeframe-abc123.vercel.app/api/instance/branding')
   })
 
+  it('uses the production domain in production, which deployment protection never blocks', async () => {
+    vi.stubEnv('API_INTERNAL_URL', '')
+    vi.stubEnv('NEXT_PUBLIC_API_URL', '/api')
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('VERCEL_URL', 'freeframe-abc123.vercel.app')
+    vi.stubEnv('VERCEL_PROJECT_PRODUCTION_URL', 'review.example.com')
+    const fetchMock = stubFetch()
+
+    const { fetchServerBranding } = await import('../lib/branding-server')
+    await fetchServerBranding()
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://review.example.com/api/instance/branding')
+  })
+
+  it('keeps the deployment URL on a preview', async () => {
+    vi.stubEnv('API_INTERNAL_URL', '')
+    vi.stubEnv('NEXT_PUBLIC_API_URL', '/api')
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    vi.stubEnv('VERCEL_URL', 'freeframe-abc123.vercel.app')
+    vi.stubEnv('VERCEL_PROJECT_PRODUCTION_URL', 'review.example.com')
+    const fetchMock = stubFetch()
+
+    const { fetchServerBranding } = await import('../lib/branding-server')
+    await fetchServerBranding()
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://freeframe-abc123.vercel.app/api/instance/branding')
+  })
+
   it('still prefers an explicit API_INTERNAL_URL', async () => {
     vi.stubEnv('API_INTERNAL_URL', 'http://api:8000')
     vi.stubEnv('VERCEL_URL', 'freeframe-abc123.vercel.app')
