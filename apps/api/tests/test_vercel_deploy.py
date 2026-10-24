@@ -208,9 +208,13 @@ def test_vercel_crons_mirror_the_beat_schedule():
 
 def test_vercel_json_routes_api_to_the_python_service():
     cfg = json.loads((REPO_ROOT / "vercel.json").read_text())
-    assert cfg["projectSettings"]["framework"] == "services"
+    # Vercel's API rejects `projectSettings` in vercel.json, and rejects a
+    # top-level `framework` alongside `services` (the preset is a project setting).
+    assert set(cfg) <= {"$schema", "services", "rewrites", "crons"}
     services = cfg["services"]
-    assert services["web"]["root"] == "apps/web/"
+    # apps/web also has a Vite (vitest) config and a Dockerfile, so the
+    # framework must be named or the build stops at "multiple frameworks".
+    assert services["web"] == {"root": "apps/web/", "framework": "nextjs"}
     assert services["api"]["entrypoint"] == "pyproject.toml"
     # The API's routes have no /api prefix (Traefik strips it in Docker); the
     # service rewrite strips it here.

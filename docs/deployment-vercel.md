@@ -4,8 +4,9 @@ FreeFrame can run as a single Vercel project instead of the Docker stack. The
 features are the same: uploads, transcoding, review, live updates, email and
 the scheduled housekeeping. What changes is which service runs each part.
 
-> **Status:** this deployment path is new and has been checked against
-> Vercel's builder source and SDKs, not yet against a live Vercel account.
+> **Status:** this deployment path is new. `vercel build` with the official
+> CLI completes for both services (including the queue worker and crons), but
+> it has not yet run against a live Vercel account.
 > Try it on a staging project first. The Docker deployment
 > ([deployment.md](deployment.md)) is unchanged and remains the reference.
 
@@ -47,8 +48,10 @@ limiting; it is no longer the Celery broker on Vercel.
 ## 1. Create the project
 
 1. Import the repository in Vercel. Leave **Root Directory** at the
-   repository root; `vercel.json` sets the framework to **Services** and
-   declares the `web` and `api` services.
+   repository root and set **Framework Preset** to **Services** if Vercel
+   has not picked it already. `vercel.json` declares the `web` (Next.js) and
+   `api` (FastAPI) services; the preset itself is a project setting and
+   cannot be set from `vercel.json`.
 2. Set the **Production Branch**. For production use the `stable` branch once
    a release that includes this guide is on it (see
    [Release channels](../README.md#release-channels)).
