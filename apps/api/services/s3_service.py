@@ -167,8 +167,9 @@ def ensure_bucket_exists():
         else:
             raise
 
-    # Set CORS for browser-based uploads (presigned PUT)
-    if not _is_aws_s3():
+    # Set CORS for browser-based uploads (presigned PUT), unless the operator
+    # manages it on the provider (S3_MANAGE_BUCKET_CORS=false).
+    if not _is_aws_s3() and settings.s3_manage_bucket_cors:
         # The same origins the API's CORS allows (settings.cors_origins):
         # a store that enforces bucket CORS (Silo, Garage) refuses uploads and
         # playback from every other origin. Older MinIO answered PutBucketCors
@@ -229,7 +230,8 @@ def ensure_bucket_exists():
             logger.warning(
                 "Could not set bucket CORS on %r (%s). Browser uploads PUT directly to "
                 "the bucket, so its CORS must allow your FreeFrame origin; configure it "
-                "manually on your S3 provider — see docs/deployment.md (External S3 Storage).",
+                "manually on your S3 provider — see docs/deployment.md (External S3 Storage). "
+                "Once it is set there, S3_MANAGE_BUCKET_CORS=false skips this step.",
                 settings.s3_bucket, e,
             )
 

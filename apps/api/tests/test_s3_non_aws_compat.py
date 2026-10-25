@@ -256,3 +256,33 @@ def test_startup_cors_wildcard_allows_any_origin(monkeypatch):
     rules = fake.cors_config["CORSRules"]
     assert [r["AllowedOrigins"] for r in rules] == [["*"]]
     assert "ETag" in rules[0]["ExposeHeaders"]
+
+
+def test_startup_cors_skipped_when_operator_manages_it(monkeypatch):
+    # A provider without PutBucketCors (it answers NotImplemented) would log a
+    # warning on every start; S3_MANAGE_BUCKET_CORS=false skips the call.
+    monkeypatch.setattr(settings, "s3_storage", "minio")
+    monkeypatch.setattr(settings, "s3_manage_bucket_cors", False)
+    fake = _FakeS3()
+    monkeypatch.setattr(s3_service, "_build_s3_client", lambda config=None: fake)
+
+    ensure_bucket_exists()
+
+    assert fake.cors_config is None
+
+
+def test_startup_cors_not_implemented_warns_with_opt_out_hint(monkeypatch, caplog):
+    from botocore.exceptions import ClientError
+
+    class _NoCorsS3(_FakeS3):
+        def put_bucket_cors(self, Bucket, CORSConfiguration):
+            raise ClientError({"Error": {"Code": "NotImplemented", "Message": "not implemented"}}, "PutBucketCors")
+
+    monkeypatch.setattr(settings, "s3_storage", "minio")
+    monkeypatch.setattr(settings, "s3_manage_bucket_cors", True)
+    monkeypatch.setattr(s3_service, "_build_s3_client", lambda config=None: _NoCorsS3())
+
+    with caplog.at_level("WARNING"):
+        ensure_bucket_exists()
+
+    assert "S3_MANAGE_BUCKET_CORS=false" in caplog.text

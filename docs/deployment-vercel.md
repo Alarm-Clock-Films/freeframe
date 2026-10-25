@@ -147,7 +147,9 @@ admin account, as on Docker.
 
 The API sets the bucket's CORS rules from `FRONTEND_URL` when it starts. If
 your storage provider ignores that API, allow your Vercel domain (and any
-custom domain) as an origin on the bucket yourself.
+custom domain) as an origin on the bucket yourself, then set
+`S3_MANAGE_BUCKET_CORS=false`. Otherwise every new function instance tries
+again and logs a "Could not set bucket CORS" warning.
 
 ---
 

@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_region: str = "us-east-1"
     s3_public_endpoint: str | None = None  # External URL for presigned URLs (e.g. http://localhost:9000 when S3_ENDPOINT is http://minio:9000)
+    # Whether the API writes the bucket's CORS rules at startup (non-AWS stores
+    # only). Turn it off when the provider does not offer that call (it answers
+    # NotImplemented) and CORS is configured on the provider directly; otherwise
+    # every start, and on Vercel every new function instance, logs a warning.
+    s3_manage_bucket_cors: bool = True
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
