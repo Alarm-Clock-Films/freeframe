@@ -264,7 +264,7 @@ Uploads go **directly from the browser to your bucket** via presigned URLs, so t
 
 If you allow **more than one origin**, give each origin its own rule rather than listing them all in one. Some backends (Garage) answer a multi-origin rule by joining every entry into a single comma-separated `Access-Control-Allow-Origin` header, which browsers reject — every upload and HLS segment fetch then fails CORS. FreeFrame's automatic startup config already emits one rule per origin.
 
-FreeFrame applies this automatically to **non-AWS** buckets at startup when it has permission (and logs a warning if it can't). The rules allow `FRONTEND_URL`, `http://localhost:3000` and every origin in `CORS_ALLOW_ORIGINS`, the same origins the API accepts; `CORS_ALLOW_ORIGINS=*` becomes a single rule allowing any origin. Older MinIO releases answered this call with `NotImplemented` and allowed every origin regardless, so a browser origin missing from that list only starts failing once you move to a store that enforces bucket CORS (Silo, Garage): add it to `CORS_ALLOW_ORIGINS`. Set it yourself for **AWS S3**, or wherever FreeFrame lacks CORS permission. **Hetzner Object Storage** exposes CORS only via API/CLI (not the Console UI), so it's easy to miss — apply the JSON above with `aws s3api put-bucket-cors`.
+FreeFrame applies this automatically to **non-AWS** buckets at startup when it has permission (and logs a warning if it can't). The rules allow `FRONTEND_URL`, `http://localhost:3000` and every origin in `CORS_ALLOW_ORIGINS`, the same origins the API accepts; `CORS_ALLOW_ORIGINS=*` becomes a single rule allowing any origin. Older MinIO releases answered this call with `NotImplemented` and allowed every origin regardless, so a browser origin missing from that list only starts failing once you move to a store that enforces bucket CORS (Silo, Garage): add it to `CORS_ALLOW_ORIGINS`. Set it yourself for **AWS S3**, or wherever FreeFrame lacks CORS permission. If your provider has no API for bucket CORS at all, the warning names `NotImplemented` and repeats on every start; once you have set the rules on the provider, set `S3_MANAGE_BUCKET_CORS=false` to skip the step. **Hetzner Object Storage** exposes CORS only via API/CLI (not the Console UI), so it's easy to miss — apply the JSON above with `aws s3api put-bucket-cors`.
 
 #### Abort incomplete multipart uploads — recommended
 
@@ -342,6 +342,7 @@ All environment variables are documented in [`.env.example`](../.env.example). K
 | `S3_ENDPOINT` | S3 endpoint the API and workers use (non-AWS); ignored when `S3_STORAGE=s3` | `http://minio:9000` |
 | `S3_PUBLIC_ENDPOINT` | Browser-reachable base URL for presigned URLs, when it differs from `S3_ENDPOINT` | (empty = `S3_ENDPOINT`) |
 | `CORS_ALLOW_ORIGINS` | Extra browser origins, comma-separated, allowed by the API and (non-AWS) the bucket | (empty) |
+| `S3_MANAGE_BUCKET_CORS` | Write the bucket's CORS rules at startup (non-AWS). Set `false` when you configure CORS on the provider yourself | `true` |
 | `JWT_SECRET` | Auth token signing key | (required, generate with `openssl rand -hex 64`) |
 | `FRONTEND_URL` | Your FreeFrame URL (with https://) | (required) |
 | `DOMAIN` | Your domain for auto SSL | (optional) |
