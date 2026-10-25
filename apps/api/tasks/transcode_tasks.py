@@ -101,6 +101,7 @@ def process_asset(self, asset_id: str, version_id: str):
                 # only the uploader, so never let a presigned URL through.
                 _publish_event(str(asset.project_id), "transcode_failed", {
                     "asset_id": asset_id,
+                    "version_id": version_id,
                     "error": redact_presigned_urls(str(exc)),
                 })
 
@@ -140,7 +141,9 @@ def _process_video(
     from packages.transcoder.ffmpeg_transcoder import FFmpegTranscoder, parse_qualities
     from packages.transcoder.base import TranscodeJob
 
-    transcoder = FFmpegTranscoder(s3, settings.s3_bucket, settings.s3_endpoint)
+    transcoder = FFmpegTranscoder(
+        s3, settings.s3_bucket, settings.s3_endpoint, storage_class=settings.s3_storage_class,
+    )
     # Progress is cosmetic; the transcode is not. If the broker stops answering,
     # every publish costs the socket timeout, and this runs inside the loop
     # draining ffmpeg's stdout -- so paying it ~100 times would stall the encode
@@ -156,8 +159,11 @@ def _process_video(
         if percent <= progress_ok["high_water"]:
             return
         progress_ok["high_water"] = percent
+        # The version as well as the asset: two versions of one asset can be
+        # transcoding at once, and the uploads panel shows a row for each.
         delivered = _publish_event(str(asset.project_id), "transcode_progress", {
             "asset_id": str(asset.id),
+            "version_id": str(version.id),
             "percent": percent,
         })
         if delivered is False:
@@ -211,7 +217,10 @@ def _process_video(
 
 def _process_audio(db, asset, version, media_file, s3, output_prefix):
     from packages.transcoder.image_processor import process_audio
-    result = process_audio(s3, settings.s3_bucket, media_file.s3_key_raw, output_prefix)
+    result = process_audio(
+        s3, settings.s3_bucket, media_file.s3_key_raw, output_prefix,
+        storage_class=settings.s3_storage_class,
+    )
     media_file.s3_key_processed = result.get("mp3_key")
     if result.get("waveform_key"):
         media_file.s3_key_thumbnail = result["waveform_key"]
@@ -222,7 +231,10 @@ def _process_audio(db, asset, version, media_file, s3, output_prefix):
 
 def _process_image(db, asset, version, media_file, s3, output_prefix):
     from packages.transcoder.image_processor import process_image
-    result = process_image(s3, settings.s3_bucket, media_file.s3_key_raw, output_prefix)
+    result = process_image(
+        s3, settings.s3_bucket, media_file.s3_key_raw, output_prefix,
+        storage_class=settings.s3_storage_class,
+    )
     media_file.s3_key_processed = result.get("webp_key")
     media_file.s3_key_thumbnail = result.get("thumbnail_key")
     db.flush()

@@ -3,7 +3,7 @@
 import * as React from "react";
 import useSWR, { mutate } from "swr";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Users, Plus, X, Shield, Link2, Check } from "lucide-react";
+import { Users, Plus, X, Shield, Link2, Check, Send } from "lucide-react";
 import { cn, copyToClipboard } from "@/lib/utils";
 import { withBasePath } from "@/lib/base-path";
 import { api } from "@/lib/api";
@@ -18,6 +18,17 @@ import type { User, UserStatus } from "@/types";
 import { InstanceSettingsTab } from "@/components/settings/instance-settings-tab";
 import { BrandingTab } from "@/components/settings/branding-tab";
 
+// The API requires a name and the dialog doesn't ask for one, so each invitee
+// is listed under the local part of their address until they accept the invite
+// and type their own.
+function parseInvites(text: string) {
+  return text
+    .split(/[\n,]/)
+    .map((e) => e.trim())
+    .filter(Boolean)
+    .map((email) => ({ email, name: email.split("@")[0] }));
+}
+
 function BulkInviteDialog() {
   const [open, setOpen] = React.useState(false);
   const [emails, setEmails] = React.useState("");
@@ -25,13 +36,11 @@ function BulkInviteDialog() {
   const [error, setError] = React.useState("");
   const [success, setSuccess] = React.useState("");
 
+  const invites = parseInvites(emails);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const emailList = emails
-      .split(/[\n,]/)
-      .map((e) => e.trim())
-      .filter(Boolean);
-    if (emailList.length === 0) return;
+    if (invites.length === 0) return;
     setLoading(true);
     setError("");
     setSuccess("");
@@ -40,9 +49,8 @@ function BulkInviteDialog() {
     const deleted: string[] = [];
     const failed: string[] = [];
     try {
-      for (const email of emailList) {
+      for (const { email, name } of invites) {
         try {
-          const name = email.split("@")[0];
           await api.post("/users/invite", { email, name });
           sent++;
         } catch (err: unknown) {
@@ -120,6 +128,30 @@ function BulkInviteDialog() {
                 className="flex w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary transition-colors focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-border-focus resize-none"
               />
             </div>
+            {invites.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <p className="text-xs text-text-tertiary">
+                  Each person sets their own name when they accept the invite.
+                  Until then they show as:
+                </p>
+                <ul
+                  aria-label="Invite preview"
+                  className="max-h-32 overflow-y-auto rounded-md border border-border divide-y divide-border"
+                >
+                  {invites.map(({ email, name }, i) => (
+                    <li
+                      key={`${i}-${email}`}
+                      className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs"
+                    >
+                      <span className="truncate text-text-secondary">{email}</span>
+                      <span className="shrink-0 font-medium text-text-primary">
+                        {name}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {error && <p className="text-xs text-status-error">{error}</p>}
             {success && (
               <p className="text-xs text-status-success">{success}</p>
@@ -225,6 +257,8 @@ export default function AdminPage() {
 
   const [deleteTarget, setDeleteTarget] = React.useState<User | null>(null);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
+  // A pending invitee is deleted the same way; for them it withdraws the invite.
+  const revokingInvite = deleteTarget?.status === "pending_invite";
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -252,6 +286,27 @@ export default function AdminPage() {
     if (await copyToClipboard(link)) {
       setCopiedId(u.id);
       setTimeout(() => setCopiedId(null), 2000);
+    }
+  };
+
+  const [resendingId, setResendingId] = React.useState<string | null>(null);
+  const [resentId, setResentId] = React.useState<string | null>(null);
+
+  // Emails a fresh 7-day link; the old link stops working. Disabled while the
+  // request is out, so a double click doesn't send the invitee two emails.
+  const handleResendInvite = async (u: User) => {
+    setResendingId(u.id);
+    try {
+      await api.post(`/users/${u.id}/resend-invite`);
+      mutate("/admin/users");
+      setResentId(u.id);
+      setTimeout(() => setResentId(null), 2000);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to resend invite";
+      alert(message);
+    } finally {
+      setResendingId(null);
     }
   };
 
@@ -345,7 +400,9 @@ export default function AdminPage() {
             />
           </div>
         ) : (
-          <div className="rounded-lg border border-border bg-bg-secondary overflow-hidden">
+          <div className="rounded-lg border border-border bg-bg-secondary overflow-x-auto">
+            {/* Scrolls rather than clips: a row with every action can be wider
+                than the page, and a clipped button cannot be reached at all. */}
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-bg-tertiary">
@@ -402,7 +459,7 @@ export default function AdminPage() {
                         : "—"}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
                         {u.status === "pending_invite" && u.invite_token && (
                           <Button
                             variant="ghost"
@@ -423,6 +480,28 @@ export default function AdminPage() {
                             )}
                           </Button>
                         )}
+                        {u.id !== user?.id &&
+                          u.status === "pending_invite" &&
+                          !u.email_verified && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleResendInvite(u)}
+                              disabled={resendingId === u.id}
+                              className="gap-1"
+                            >
+                              {resentId === u.id ? (
+                                <>
+                                  <Check className="h-3.5 w-3.5 text-status-success" />{" "}
+                                  Sent
+                                </>
+                              ) : (
+                                <>
+                                  <Send className="h-3.5 w-3.5" /> Resend Invite
+                                </>
+                              )}
+                            </Button>
+                          )}
                         {u.id !== user?.id && (
                           <Button
                             variant="ghost"
@@ -434,7 +513,12 @@ export default function AdminPage() {
                             {u.is_superadmin ? "Remove Admin" : "Make Admin"}
                           </Button>
                         )}
-                        {u.id !== user?.id && u.status === "active" ? (
+                        {/* A pending row with a verified email is an invitee who
+                            signed in with a code while a code still let them in: a
+                            working account, so it is deactivated, not revoked. */}
+                        {u.id !== user?.id &&
+                        (u.status === "active" ||
+                          (u.status === "pending_invite" && u.email_verified)) ? (
                           <Button
                             variant="ghost"
                             size="sm"
@@ -464,6 +548,18 @@ export default function AdminPage() {
                               Delete
                             </Button>
                           </>
+                        ) : u.id !== user?.id && u.status === "pending_invite" ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setDeleteError(null);
+                              setDeleteTarget(u);
+                            }}
+                            className="text-status-error hover:text-status-error"
+                          >
+                            Revoke Invite
+                          </Button>
                         ) : u.id === user?.id ? (
                           <span className="text-xs text-text-tertiary italic">
                             You
@@ -485,9 +581,17 @@ export default function AdminPage() {
         onOpenChange={(open) => {
           if (!open) setDeleteTarget(null);
         }}
-        title={`Delete ${deleteTarget?.name ?? "user"}?`}
-        description="They'll be removed from the user list and can't sign in. Their comments and activity stay. Give any projects they solely own a new owner first, or nobody will be able to manage them. This email can't be invited again."
-        confirmLabel="Delete"
+        title={
+          revokingInvite
+            ? `Revoke the invite for ${deleteTarget?.email}?`
+            : `Delete ${deleteTarget?.name ?? "user"}?`
+        }
+        description={
+          revokingInvite
+            ? "Their invite link stops working, they can't sign in, and they're removed from the user list. This email can't be invited again."
+            : "They'll be removed from the user list and can't sign in. Their comments and activity stay. Give any projects they solely own a new owner first, or nobody will be able to manage them. This email can't be invited again."
+        }
+        confirmLabel={revokingInvite ? "Revoke Invite" : "Delete"}
         variant="danger"
         error={deleteError}
         onConfirm={handleDelete}

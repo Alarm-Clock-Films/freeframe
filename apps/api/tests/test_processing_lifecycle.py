@@ -40,6 +40,7 @@ def _drive_process_asset(retries: int, retry_raises: BaseException):
     db.first.side_effect = [version, asset, media_file]
 
     published = []
+    payloads = []
     # process_asset is a PromiseProxy until it is resolved; patch the real Task.
     task = transcode_tasks.process_asset
     task = getattr(task, "_get_current_object", lambda: task)()
@@ -53,7 +54,7 @@ def _drive_process_asset(retries: int, retry_raises: BaseException):
              patch.object(transcode_tasks, "_process_video",
                           side_effect=RuntimeError("ffmpeg blew up")), \
              patch.object(transcode_tasks, "_publish_event",
-                          side_effect=lambda p, t, pl: published.append(t)), \
+                          side_effect=lambda p, t, pl: (published.append(t), payloads.append(pl))), \
              patch.object(task, "retry", side_effect=retry_raises) as retry_mock:
             try:
                 task.run(str(asset.id), str(version.id))
@@ -66,7 +67,7 @@ def _drive_process_asset(retries: int, retry_raises: BaseException):
     finally:
         task.pop_request()
 
-    return SimpleNamespace(version=version, published=published,
+    return SimpleNamespace(version=version, published=published, payloads=payloads,
                            outcome=outcome, retry_calls=retry_calls)
 
 
@@ -106,6 +107,16 @@ def test_a_retry_that_cannot_be_enqueued_records_the_failure():
     assert r.published == ["transcode_failed"]
 
 
+def test_the_failure_event_names_the_version():
+    """Two uploads of one asset can be in Processing at once (v1 transcoding, v2
+    uploaded on top). An event naming only the asset is applied to both rows, so
+    v1 failing marked v2 failed too (#273)."""
+    r = _drive_process_asset(retries=3, retry_raises=Retry())
+
+    assert r.published == ["transcode_failed"]
+    assert r.payloads[0]["version_id"] == str(r.version.id)
+
+
 @pytest.mark.parametrize("retries", [0, 1, 2])
 def test_attempts_below_the_ceiling_still_retry(retries):
     """Off-by-one guard: one initial attempt plus max_retries."""
@@ -127,9 +138,9 @@ def test_the_sweep_re_dispatches_rather_than_condemning():
     """Marking a stuck version `failed` would be worse than leaving it.
 
     CompleteMultipartUpload has already run by then, so the raw object is fully
-    assembled, and the reaper deletes s3_key_raw for `failed` and `uploading`
-    alike. A short broker outage after a large upload would schedule that master
-    for deletion. That is why the previous attempt at this was reverted.
+    assembled, and nothing ever re-queues a `failed` version. A short broker
+    outage after a large upload would leave that master untranscoded for good.
+    That is why the previous attempt at this was reverted.
     """
     from apps.api.tasks import cleanup_tasks
 

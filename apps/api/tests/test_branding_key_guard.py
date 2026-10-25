@@ -192,11 +192,8 @@ def test_put_refuses_a_key_that_is_not_this_projects_logo(api, real_db, s3, valu
 def test_logo_issued_by_the_upload_step_is_accepted_and_signed(api, real_db, s3, monkeypatch):
     from apps.api.services import s3_service
 
-    class _Client:
-        def generate_presigned_url(self, op, Params, ExpiresIn):
-            return f"https://s3.test/put/{Params['Key']}"
-
-    monkeypatch.setattr(s3_service, "get_s3_client", lambda: _Client())
+    monkeypatch.setattr(s3_service, "generate_presigned_put_url",
+                        lambda key, content_type=None, expires_in=3600: f"https://s3.test/put/{key}")
     owner = _user(real_db, "owner")
     project = _project(real_db, owner)
     c = api(owner)
@@ -213,6 +210,34 @@ def test_logo_issued_by_the_upload_step_is_accepted_and_signed(api, real_db, s3,
     for body in (put.json(), got.json()):
         assert body["logo_s3_key"] == key
         assert body["logo_url"] == _fake_sign(key)
+
+
+def test_logo_upload_url_is_signed_for_the_browser_facing_endpoint(api, real_db, monkeypatch):
+    """The upload URL goes to the browser, so it must use S3_PUBLIC_ENDPOINT.
+
+    It was signed with the server-side client, whose endpoint is the internal
+    one (http://minio:9000 in the dev stack): the browser could not resolve it,
+    and every logo picked on the settings page failed with "Failed to fetch".
+    """
+    from apps.api.services import s3_service
+    from apps.api.config import settings
+
+    monkeypatch.setattr(settings, "s3_storage", "minio")
+    monkeypatch.setattr(settings, "s3_endpoint", "http://minio:9000")
+    monkeypatch.setattr(settings, "s3_public_endpoint", "http://public.example:29000")
+    s3_service._get_presign_client.cache_clear()
+    s3_service.get_s3_client.cache_clear()
+    try:
+        owner = _user(real_db, "owner")
+        project = _project(real_db, owner)
+
+        issued = api(owner).post(f"/projects/{project.id}/branding/logo-upload")
+
+        assert issued.status_code == 201, issued.text
+        assert issued.json()["upload_url"].startswith("http://public.example:29000/")
+    finally:
+        s3_service._get_presign_client.cache_clear()
+        s3_service.get_s3_client.cache_clear()
 
 
 @pytest.mark.parametrize("cleared", [None, ""])
@@ -277,7 +302,8 @@ def test_share_validate_does_not_echo_a_foreign_stored_logo(api, real_db, s3):
     owned = api(None).get(f"/share/{link.token}").json()["branding"]
 
     assert foreign["logo_url"] is None
-    assert owned["logo_url"] == own
+    # A link the page can load, not the key itself.
+    assert owned["logo_url"] == _fake_sign(own)
 
 
 # ── project purge ────────────────────────────────────────────────────────────
@@ -351,8 +377,11 @@ def test_instance_issued_key_is_accepted_and_replaces_the_old_one(api, real_db, 
 
     assert put.status_code == 200, put.text
     url_field = column.replace("_key", "_url")
-    assert put.json()[url_field] == _fake_sign(key)
-    assert public.json()[url_field] == _fake_sign(key)
+    path = f"/instance/branding/logo/{slot}?v={key.rsplit('/', 1)[-1]}"
+    assert put.json()[url_field] == path
+    assert public.json()[url_field] == path
+    served = api(None).get(path, follow_redirects=False)
+    assert served.status_code == 302 and served.headers["location"] == _fake_sign(key)
     assert s3["deleted"] == [old]
 
 

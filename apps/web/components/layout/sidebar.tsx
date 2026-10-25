@@ -49,7 +49,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname()
   const { user, logout, isSuperAdmin } = useAuthStore()
   const togglePanel = useUploadStore((s) => s.togglePanel)
+  const setPanelOpen = useUploadStore((s) => s.setPanelOpen)
   const panelOpen = useUploadStore((s) => s.panelOpen)
+  // Only when open: every store write is a write of the persisted upload rows.
+  const closeUploadsPanel = () => { if (panelOpen) setPanelOpen(false) }
   // A count, not the rows, so progress writes don't re-render the sidebar.
   // The signed-in account's uploads only, though another's may still be running.
   const activeUploads = useUploadStore((s) => visibleFiles(s).filter(isOnItsWay).length)
@@ -144,7 +147,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               <Link
                 key={item.href}
                 href={item.href}
-                onClick={() => setNotifOpen(false)}
+                onClick={() => { setNotifOpen(false); closeUploadsPanel() }}
                 className={cn(
                   'group relative flex items-center rounded-md transition-colors duration-100',
                   collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
@@ -169,9 +172,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             )
           })}
 
-          {/* Notifications button */}
+          {/* Notifications button. The rail stays live beside the uploads
+              panel, and the drawer opens in the panel's place, so it closes the
+              panel rather than opening on top of it. */}
           <button
-            onClick={() => setNotifOpen((v) => !v)}
+            onClick={() => { closeUploadsPanel(); setNotifOpen((v) => !v) }}
             className={cn(
               'group relative flex w-full items-center rounded-md transition-colors duration-100',
               collapsed ? 'justify-center h-9 w-9 mx-auto' : 'gap-2.5 px-2.5 h-9',
@@ -281,6 +286,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 <DropdownMenu.Item asChild>
                   <Link
                     href="/settings/profile"
+                    onClick={closeUploadsPanel}
                     className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-text-secondary hover:bg-bg-hover hover:text-text-primary focus:outline-none"
                   >
                     <User className="h-4 w-4" />
@@ -290,6 +296,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 <DropdownMenu.Item asChild>
                   <Link
                     href={isSuperAdmin ? '/settings/admin' : '/settings/appearance'}
+                    onClick={closeUploadsPanel}
                     className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-text-secondary hover:bg-bg-hover hover:text-text-primary focus:outline-none"
                   >
                     <Settings className="h-4 w-4" />

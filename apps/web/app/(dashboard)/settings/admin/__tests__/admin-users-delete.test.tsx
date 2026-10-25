@@ -25,11 +25,12 @@ vi.mock('swr', () => ({
   mutate: (...a: unknown[]) => h.mutate(...a),
 }))
 const apiDelete = vi.fn()
+const apiPost = vi.fn()
 vi.mock('@/lib/api', () => ({
   api: {
     get: vi.fn(),
     patch: vi.fn(),
-    post: vi.fn(),
+    post: (...a: unknown[]) => apiPost(...a),
     delete: (...a: unknown[]) => apiDelete(...a),
   },
 }))
@@ -43,6 +44,23 @@ import { useAuthStore } from '@/stores/auth-store'
 const me = makeUser({ id: 'me', name: 'Me Admin', email: 'me@example.com', is_superadmin: true })
 const active = makeUser({ id: 'active', name: 'Active Person', email: 'active@example.com' })
 const gone = makeUser({ id: 'gone', name: 'Gone Person', email: 'gone@example.com', status: 'deactivated' })
+const invited = makeUser({
+  id: 'invited',
+  name: 'wrong.address',
+  email: 'wrong.address@example.com',
+  status: 'pending_invite',
+  email_verified: false,
+  invite_token: 'tok',
+})
+// Signed in with an email code back when a code still let a pending invitee in.
+const signedIn = makeUser({
+  id: 'signed-in',
+  name: 'Code Signer',
+  email: 'code.signer@example.com',
+  status: 'pending_invite',
+  email_verified: true,
+  invite_token: 'tok2',
+})
 
 function rowFor(name: string) {
   return screen.getByText(name).closest('tr') as HTMLElement
@@ -97,5 +115,83 @@ describe('Admin users: Delete', () => {
     await waitFor(() => expect(apiDelete).toHaveBeenCalledWith('/users/gone'))
     await waitFor(() => expect(h.mutate).toHaveBeenCalledWith('/admin/users'))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+})
+
+describe('Admin users: Revoke invite', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    h.users = [me, active, gone, invited]
+    useAuthStore.setState({ user: me, isSuperAdmin: true })
+  })
+
+  it('offers Revoke Invite only on pending rows', () => {
+    render(<AdminPage />)
+
+    expect(screen.getAllByRole('button', { name: 'Revoke Invite' })).toHaveLength(1)
+    expect(within(rowFor('wrong.address')).getByRole('button', { name: 'Revoke Invite' })).toBeInTheDocument()
+    expect(within(rowFor('wrong.address')).queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+  })
+
+  it('offers Deactivate, not Revoke Invite, on a pending row whose owner already signed in', () => {
+    h.users = [me, invited, signedIn]
+    render(<AdminPage />)
+
+    expect(within(rowFor('Code Signer')).queryByRole('button', { name: 'Revoke Invite' })).not.toBeInTheDocument()
+    expect(within(rowFor('Code Signer')).getByRole('button', { name: 'Deactivate' })).toBeInTheDocument()
+    expect(within(rowFor('wrong.address')).queryByRole('button', { name: 'Deactivate' })).not.toBeInTheDocument()
+  })
+
+  it('revokes the invite by deleting the pending user', async () => {
+    apiDelete.mockResolvedValue(undefined)
+    render(<AdminPage />)
+
+    fireEvent.click(within(rowFor('wrong.address')).getByRole('button', { name: 'Revoke Invite' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Revoke the invite for wrong.address@example.com?')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke Invite' }))
+
+    await waitFor(() => expect(apiDelete).toHaveBeenCalledWith('/users/invited'))
+    await waitFor(() => expect(h.mutate).toHaveBeenCalledWith('/admin/users'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+})
+
+describe('Admin users: Resend invite', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    h.users = [me, active, gone, invited, signedIn]
+    useAuthStore.setState({ user: me, isSuperAdmin: true })
+  })
+
+  it('offers Resend Invite only on an invite nobody has accepted', () => {
+    render(<AdminPage />)
+
+    expect(screen.getAllByRole('button', { name: 'Resend Invite' })).toHaveLength(1)
+    expect(within(rowFor('wrong.address')).getByRole('button', { name: 'Resend Invite' })).toBeInTheDocument()
+    expect(within(rowFor('Code Signer')).queryByRole('button', { name: 'Resend Invite' })).not.toBeInTheDocument()
+  })
+
+  it('emails a fresh link, refreshes the list and says it was sent', async () => {
+    apiPost.mockResolvedValue({ ...invited, invite_token: 'fresh' })
+    render(<AdminPage />)
+
+    fireEvent.click(within(rowFor('wrong.address')).getByRole('button', { name: 'Resend Invite' }))
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith('/users/invited/resend-invite'))
+    await waitFor(() => expect(h.mutate).toHaveBeenCalledWith('/admin/users'))
+    expect(await within(rowFor('wrong.address')).findByText('Sent')).toBeInTheDocument()
+  })
+
+  it('shows the server message when the resend is refused', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    apiPost.mockRejectedValue(new Error('Only a pending invite can be resent'))
+    render(<AdminPage />)
+
+    fireEvent.click(within(rowFor('wrong.address')).getByRole('button', { name: 'Resend Invite' }))
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Only a pending invite can be resent'))
+    expect(within(rowFor('wrong.address')).queryByText('Sent')).not.toBeInTheDocument()
+    alertSpy.mockRestore()
   })
 })

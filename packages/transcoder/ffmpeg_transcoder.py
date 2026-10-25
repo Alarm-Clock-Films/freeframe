@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -645,7 +646,12 @@ DEFAULT_QUALITIES = ("1080p", "720p", "360p")
 
 
 def rung_height(name: str) -> int:
-    """The vertical resolution a rung encodes to (QUALITY_MAP holds `w:h`)."""
+    """The short-side resolution a rung names: 1080 for 1080p.
+
+    QUALITY_MAP holds landscape `w:h` boxes, so this is the box's height, and
+    it is what a source's short side is measured against: a 1080x1920 portrait
+    clip is a 1080p source (#452).
+    """
     return int(QUALITY_MAP[name][0].split(":")[1])
 
 
@@ -931,6 +937,47 @@ def get_hdr_mode() -> str:
     return os.environ.get("TRANSCODER_HDR", "convert").lower()
 
 
+# Audio bitrate for the review stream (TRANSCODER_AUDIO_BITRATE, #328).
+#
+# Unset emits no audio options at all, which is what this has always done: the
+# HLS muxer picks native AAC-LC itself, measured at about 128 kb/s for a stereo
+# source (ffmpeg 7.1). The codec stays AAC-LC whatever is set, because it is the
+# only audio codec every browser plays out of HLS/MPEG-TS.
+#
+# The number is a target for ffmpeg's built-in AAC encoder rather than a
+# promise. Measured on 6s of stereo, 192k lands within a few kb/s of the ask;
+# above that what it spends depends on the material, 223-262 kb/s for 256k
+# and 224-245 kb/s for 320k.
+_AUDIO_BITRATE_ENV = "TRANSCODER_AUDIO_BITRATE"
+_AUDIO_BITRATE_RANGE_K = (64, 512)
+
+
+def parse_audio_bitrate(raw: str | None) -> Optional[str]:
+    """Turn TRANSCODER_AUDIO_BITRATE into an ffmpeg `-b:a` value, or None.
+
+    Only `<n>k` is accepted. A bare number reaches ffmpeg as bits per second,
+    so "320" would be a silent request for 320 b/s; refusing it is kinder than
+    guessing which unit was meant. Like TRANSCODER_CPU_LIMIT, an unusable value
+    falls back to the default with a line in the log rather than failing jobs.
+    """
+    text = (raw or "").strip().lower()
+    if not text:
+        return None
+    low, high = _AUDIO_BITRATE_RANGE_K
+    # [0-9], not \d: \d also matches non-ASCII digits such as full-width
+    # "３２０k", which int() reads but ffmpeg refuses.
+    match = re.fullmatch(r"([0-9]+)k", text)
+    if not match or not low <= int(match.group(1)) <= high:
+        print(f"[transcoder] {_AUDIO_BITRATE_ENV}={raw!r} is not a bitrate between "
+              f"{low}k and {high}k; leaving the audio at ffmpeg's default", flush=True)
+        return None
+    return text
+
+
+def get_audio_bitrate() -> Optional[str]:
+    return parse_audio_bitrate(os.environ.get(_AUDIO_BITRATE_ENV))
+
+
 # Stream copy (TRANSCODER_SOURCE_COPY), off unless a deployment asks for it.
 # It only ever applies where the ladder has already resolved to a single
 # rendition at the source's own size, so it changes what a transcode costs,
@@ -983,20 +1030,41 @@ def display_rotation(stream: dict) -> float:
 
     `rotate` in the stream tags is the older spelling of the same thing and is
     still what some files carry, so both are read.
+
+    A value that is there but is not a finite number also comes back as 0, so
+    callers can size with it; whether to trust that 0 is rotation_unreadable().
     """
     for side_data in stream.get("side_data_list") or []:
         if side_data.get("rotation") is not None:
-            try:
-                return abs(float(side_data["rotation"])) % 360
-            except (TypeError, ValueError):
-                return 0.0
+            return _rotation_degrees(side_data["rotation"]) or 0.0
     tag = (stream.get("tags") or {}).get("rotate")
     if tag is not None:
-        try:
-            return abs(float(tag)) % 360
-        except (TypeError, ValueError):
-            return 0.0
+        return _rotation_degrees(tag) or 0.0
     return 0.0
+
+
+def _rotation_degrees(value) -> Optional[float]:
+    """`value` as degrees in [0, 360), or None if it is not a finite number."""
+    try:
+        degrees = float(value)
+    except (TypeError, ValueError):
+        return None
+    return abs(degrees) % 360 if math.isfinite(degrees) else None
+
+
+def rotation_unreadable(stream: dict) -> bool:
+    """Whether this stream carries a rotation that does not parse as one.
+
+    Not reachable from ffprobe 7.1, which prints rotation as a number. Such a
+    value reads as 0 from display_rotation() but says nothing about whether the
+    picture is turned, so the copy gate refuses it and is_display_transformed()
+    counts it: an unanswered question falls toward encoding (#380).
+    """
+    values = [side_data.get("rotation")
+              for side_data in stream.get("side_data_list") or []]
+    values.append((stream.get("tags") or {}).get("rotate"))
+    return any(value is not None and _rotation_degrees(value) is None
+               for value in values)
 
 
 def is_display_transformed(stream: dict) -> bool:
@@ -1012,7 +1080,24 @@ def is_display_transformed(stream: dict) -> bool:
         if side_data.get("side_data_type") == "Display Matrix" \
                 or "rotation" in side_data or "displaymatrix" in side_data:
             return True
-    return bool(display_rotation(stream))
+    return bool(display_rotation(stream)) or rotation_unreadable(stream)
+
+
+def rung_box(target: str, width: int, height: int) -> str:
+    """A rung's `w:h` box, turned to lie the way a `width` x `height` frame does.
+
+    QUALITY_MAP's boxes are landscape, and fitted as they are a portrait frame
+    is sized by its long side: the 1080p rung made 608x1080 of a 1080x1920 phone
+    clip. Turned, the box puts the rung's height on the frame's short side, so
+    1080x1920 keeps its size under 1080p and comes out 720x1280 under 720p, as a
+    landscape source would (#452). A square frame or box is left as it is.
+    """
+    if not width or not height:
+        return target
+    box_w, box_h = (int(v) for v in target.split(":"))
+    if (box_w - box_h) * (width - height) < 0:
+        return f"{box_h}:{box_w}"
+    return target
 
 
 def rung_is_source_size(target: str, width: int, height: int) -> bool:
@@ -1077,20 +1162,19 @@ _NVENC_FRAME_LIMITS = {
 def nvenc_rung_target(target: str, width: int, height: int, encoder: str) -> str:
     """A rung's box, enlarged where its fit would be too small for `encoder`.
 
-    The ladder's boxes are landscape, so a tall portrait source comes out of the
-    360p one narrower than NVENC encodes (720x1920 gives 136x360, under
-    h264_nvenc's 146), and a very wide one shorter (8000x480 gives 640x38). Such
-    a rung gets the smallest box of the source's own shape that the encoder
-    takes instead -- 146:390 and 834:50 for those two -- so the job stays on the
-    GPU rather than failing over to software. The rung is a little larger than
-    the software pipeline makes it, and keeps its shape.
+    A very tall source comes out of the 360p box narrower than NVENC encodes
+    (400x1920 in `360:640` gives 134x640, under h264_nvenc's 146), and a very
+    wide one shorter (8000x480 in `640:360` gives 640x38). Such a rung gets the
+    smallest box of the source's own shape that the encoder takes instead --
+    146:702 and 834:50 for those two -- so the job stays on the GPU rather than
+    failing over to software. The rung is a little larger than the software
+    pipeline makes it, and keeps its shape.
 
     `width` x `height` must be the frame the scaler is handed, which is not
     always the stored one: see the call in transcode(). Returned unchanged when
     the fit already suits the encoder, or when no box would without scaling the
     source up or passing the encoder's maximum; the software fallback takes
-    those. Portrait rungs are still sized by their long side here (#452), so a
-    portrait 360p rung is 360 tall, not 360 wide; this only keeps it encodable.
+    those.
     """
     limits = _NVENC_FRAME_LIMITS.get(encoder)
     if not limits or not width or not height:
@@ -1363,10 +1447,10 @@ def refuse_a_truncated_result(
     between two numbers, and a mismatch is not proof of a short read: it can also
     be a duration this code trusted and should not have. The two outcomes are
     not symmetric. Raising once costs a re-read, and a re-read is the cure for
-    the transient case. Raising every time costs the master: the version reaches
-    `failed`, and `_reap_stale_uploads` deletes the original of a `failed`
-    version a day later. The ladder can always be built again; the master
-    cannot. So this refuses while a retry remains and gives way when none does.
+    the transient case. Raising every time strands the master: the version
+    reaches `failed`, and nothing ever transcodes a `failed` version again. The
+    ladder can always be built again; the master cannot. So this refuses while a
+    retry remains and gives way when none does.
     """
     if not source_video_seconds or source_video_seconds <= 0:
         # Nothing trustworthy to compare against, which is the normal case for
@@ -1428,10 +1512,19 @@ _UPLOAD_THREADS = 8
 
 
 class FFmpegTranscoder(BaseTranscoder):
-    def __init__(self, s3_client, bucket: str, s3_endpoint: str = None):
+    def __init__(self, s3_client, bucket: str, s3_endpoint: str = None, storage_class: str | None = None):
         self.s3 = s3_client
         self.bucket = bucket
         self.s3_endpoint = s3_endpoint
+        # S3_STORAGE_CLASS, sent on every output; None leaves the bucket default.
+        self.storage_class = storage_class
+
+    def _extra_args(self, content_type: str, cache_control: str) -> dict:
+        """ExtraArgs for one output upload, with the storage class when set."""
+        extra = {"ContentType": content_type, "CacheControl": cache_control}
+        if self.storage_class:
+            extra["StorageClass"] = self.storage_class
+        return extra
     
     def _get_presigned_url(self, s3_key: str, expires_in: int = 7200) -> str:
         """Generate a presigned URL for streaming input to FFmpeg."""
@@ -1769,7 +1862,7 @@ class FFmpegTranscoder(BaseTranscoder):
             content_type, cache_control = self._get_content_type(path.name)
             self.s3.upload_file(
                 str(path), self.bucket, s3_key,
-                ExtraArgs={"ContentType": content_type, "CacheControl": cache_control},
+                ExtraArgs=self._extra_args(content_type, cache_control),
             )
             return s3_key
 
@@ -1841,7 +1934,7 @@ class FFmpegTranscoder(BaseTranscoder):
             )
             self.s3.upload_file(
                 str(mp4_path), self.bucket, key,
-                ExtraArgs={"ContentType": "video/mp4", "CacheControl": "max-age=86400"},
+                ExtraArgs=self._extra_args("video/mp4", "max-age=86400"),
             )
         except Exception as exc:  # noqa: BLE001 - never fail a good ladder over this
             print(
@@ -1969,9 +2062,12 @@ class FFmpegTranscoder(BaseTranscoder):
             source_height = (meta.height if meta else 0) or 0
             source_width = (meta.width if meta else 0) or 0
 
-            qualities = [q for q in requested if rung_height(q) <= source_height]
+            # A rung is named for the short side, whichever way up the source
+            # is, and rotation does not change which side that is (#452).
+            qualities = [q for q in requested
+                         if rung_height(q) <= min(source_width, source_height)]
             # What each rung scales to. Its own nominal size, except for the one
-            # kept below.
+            # kept below; either is turned to the frame's shape by rung_box().
             scale_targets = {q: QUALITY_MAP[q][0] for q in requested}
             if not qualities and requested:
                 # Never emit an empty ladder: keep the smallest requested rung,
@@ -2010,7 +2106,8 @@ class FFmpegTranscoder(BaseTranscoder):
             #     codec name alone,
             #   * SDR, since HDR and Dolby Vision are the cases the filter graph
             #     exists for,
-            #   * no display rotation, which a remux cannot carry, and
+            #   * no display rotation, which a remux cannot carry, nor one too
+            #     garbled to read, and
             #   * sync samples a player can start at, which costs a probe and so
             #     is asked last, only once everything free has passed.
             #
@@ -2023,12 +2120,14 @@ class FFmpegTranscoder(BaseTranscoder):
                 source_copy_enabled()
                 and len(qualities) == 1
                 and rung_is_source_size(
-                    scale_targets[qualities[0]], source_width, source_height
+                    rung_box(scale_targets[qualities[0]], source_width, source_height),
+                    source_width, source_height,
                 )
                 and is_browser_safe(_vid_stream)
                 and not is_hdr
                 and dovi_profile is None
                 and not display_rotation(_vid_stream)
+                and not rotation_unreadable(_vid_stream)
             )
 
             if copy_source:
@@ -2062,6 +2161,8 @@ class FFmpegTranscoder(BaseTranscoder):
             # when the ladder has resolved to a single rung, and a single rung
             # is never short of threads.
             cpu_plan = thread_plan(get_cpu_budget(), len(qualities))
+            # Read once for the same reason: a typo is reported once per job.
+            audio_bitrate = get_audio_bitrate() if has_audio else None
 
             hls_dir = work_dir / "hls"
             hls_dir.mkdir()
@@ -2091,7 +2192,7 @@ class FFmpegTranscoder(BaseTranscoder):
                 if has_audio:
                     cmd += (
                         ["-c:a", "copy"] if audio_codec == "aac"
-                        else ["-c:a", "aac", "-b:a", "192k"]
+                        else ["-c:a", "aac", "-b:a", audio_bitrate or "192k"]
                     )
                 cmd += [
                     "-f", "hls",
@@ -2218,19 +2319,24 @@ class FFmpegTranscoder(BaseTranscoder):
                     # or format option; the libplacebo prefix already set the target
                     # bit depth and the software encoder sets -pix_fmt itself.
                     scale_extra = ""
-                targets = scale_targets
+                # Each box is turned to the frame the scaler is handed. ffmpeg
+                # autorotates a frame in system memory ahead of the graph, so a
+                # software decode, and whatever is uploaded -- a CPU decode, or
+                # a rotated source's GPU decode -- is scaled upright. Only
+                # hardware frames keep the stored size: NVENC and VAAPI decode
+                # no rotated source into those, and QSV, which does, is sized
+                # as stored.
+                hardware_frames = (
+                    not (cpu_upload or dv_software) and bool(_BACKEND_HWACCEL.get(backend))
+                )
+                seen = (source_width, source_height)
+                if not hardware_frames and round(display_rotation(_vid_stream)) % 180 == 90:
+                    seen = (source_height, source_width)
+                targets = {q: rung_box(scale_targets[q], *seen) for q in qualities}
                 if backend == "nvenc" and not dv_software:
                     # NVENC has a minimum frame size; see nvenc_rung_target.
-                    # It needs the frame the scaler is handed. ffmpeg autorotates
-                    # a frame in system memory ahead of the graph, so whatever
-                    # is uploaded -- a CPU decode, or a rotated source's GPU
-                    # decode -- is scaled upright. Only CUDA frames keep the
-                    # stored size, and no rotated source is decoded into those.
-                    seen = (source_width, source_height)
-                    if cpu_upload and round(display_rotation(_vid_stream)) % 180 == 90:
-                        seen = (source_height, source_width)
                     encoder = "hevc_nvenc" if out_mode["family"] == "hevc" else "h264_nvenc"
-                    targets = {q: nvenc_rung_target(scale_targets[q], *seen, encoder)
+                    targets = {q: nvenc_rung_target(targets[q], *seen, encoder)
                                for q in qualities}
                 filter_complex = f"{hdr_prefix}{src}split={len(qualities)}{split_outputs};"
                 filter_complex += ";".join(
@@ -2274,6 +2380,9 @@ class FFmpegTranscoder(BaseTranscoder):
                     ffmpeg_cmd += ["-map", f"[{quality}]"]
                     if has_audio:
                         ffmpeg_cmd += ["-map", "a:0"]
+                        if audio_bitrate:
+                            # Indexed per audio stream for the reason above.
+                            ffmpeg_cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", audio_bitrate]
                     if backend == "cpu" or dv_software:
                         enc = "libx265" if family == "hevc" else "libx264"
                         ffmpeg_cmd += [f"-c:v:{i}", enc, "-preset", "fast",
@@ -2414,9 +2523,11 @@ class FFmpegTranscoder(BaseTranscoder):
             elif encode_backend in _CPU_DECODE_UPLOAD and not dv_software and turned:
                 how = ("decoding into system memory" if encode_backend in _MEMORY_DECODE_HWACCEL
                        else "decoding on the CPU")
+                rotation = ("unreadable rotation" if rotation_unreadable(_vid_stream)
+                            else f"rotation {display_rotation(_vid_stream):g}")
                 print(
                     f"[transcoder] {job.input_s3_key} has a display matrix "
-                    f"(rotation {display_rotation(_vid_stream):g}); {how} so ffmpeg "
+                    f"({rotation}); {how} so ffmpeg "
                     f"turns it upright, encoding on {encode_backend}",
                     flush=True,
                 )
@@ -2544,7 +2655,7 @@ class FFmpegTranscoder(BaseTranscoder):
             if thumb_path.exists():
                 self.s3.upload_file(
                     str(thumb_path), self.bucket, thumbnail_key,
-                    ExtraArgs={"ContentType": "image/jpeg", "CacheControl": "max-age=86400"},
+                    ExtraArgs=self._extra_args("image/jpeg", "max-age=86400"),
                 )
                 uploaded_thumb = True
 

@@ -28,6 +28,7 @@ from ..schemas.share import (
     FolderShareAssetsResponse,
     FolderShareSubfolder,
     ShareAssetVersionItem,
+    ShareBranding,
     MultiShareCreate,
     ShareLinkActivityResponse,
     ShareLinkCreate,
@@ -44,7 +45,7 @@ from ..services.permissions import (
 from ..services.auth_service import bcrypt_password_bytes
 from ..services.redis_service import create_share_session
 from ..services.search import escape_like
-from ..services.owned_keys import is_project_logo_key
+from ..services.owned_keys import is_project_logo_key, sign_if_owned
 from ..services.avatar_keys import sign_avatar
 from ..services.s3_service import generate_presigned_get_url, build_download_filename
 from ..schemas.asset import DownloadOption
@@ -250,6 +251,36 @@ def list_share_links(
     ).all()
 
 
+def _share_branding(db: Session, project_id: uuid.UUID) -> Optional[ShareBranding]:
+    """The project branding a share page shows, the same for every link type.
+
+    The logo is a link the browser can load, never a storage key: the project's
+    cover when the owner chose it and there is one, otherwise the project's own
+    uploaded logo, otherwise null so the page falls back to the instance logo.
+    """
+    project = db.query(Project).filter(Project.id == project_id, Project.deleted_at.is_(None)).first()
+    if project is None:
+        return None
+    branding = db.query(ProjectBranding).filter(ProjectBranding.project_id == project_id).first()
+    if branding is None:
+        return ShareBranding()
+
+    logo_url = None
+    if branding.use_cover_as_logo and project.poster_s3_key:
+        try:
+            logo_url = generate_presigned_get_url(project.poster_s3_key)
+        except Exception:
+            logo_url = None
+    if logo_url is None:
+        # Only this project's own uploaded logo, the rule GET /projects/{id}/branding applies.
+        logo_url = sign_if_owned(is_project_logo_key(project_id, branding.logo_s3_key), branding.logo_s3_key)
+    return ShareBranding(
+        logo_url=logo_url,
+        primary_color=branding.primary_color,
+        custom_footer=branding.custom_footer,
+    )
+
+
 def _build_share_validate_response(
     db: Session,
     link: ShareLink,
@@ -265,10 +296,12 @@ def _build_share_validate_response(
     # Resolve folder / project names
     folder_name = None
     project_name = None
+    branding_project_id = link.project_id
     if link.folder_id:
         folder = db.query(Folder).filter(Folder.id == link.folder_id, Folder.deleted_at.is_(None)).first()
         if folder:
             folder_name = folder.name
+            branding_project_id = folder.project_id
     if link.project_id:
         project = db.query(Project).filter(Project.id == link.project_id, Project.deleted_at.is_(None)).first()
         if project:
@@ -281,7 +314,6 @@ def _build_share_validate_response(
 
     # Build asset details for asset shares
     asset_data = None
-    branding_data = None
     if link.asset_id:
         asset = _get_asset(db, link.asset_id)
         # Get thumbnail URL
@@ -310,21 +342,9 @@ def _build_share_validate_response(
             "thumbnail_url": thumbnail_url,
             "stream_url": stream_url,
         }
-        # Get project branding
-        branding = db.query(ProjectBranding).filter(
-            ProjectBranding.project_id == asset.project_id
-        ).first()
-        if branding:
-            branding_data = {
-                # A key, not a link, and only when it is this project's own
-                # uploaded logo, the same rule GET /projects/{id}/branding applies.
-                "logo_url": (branding.logo_s3_key
-                             if is_project_logo_key(asset.project_id, branding.logo_s3_key)
-                             else None),
-                "primary_color": branding.primary_color,
-                "custom_title": branding.custom_title,
-                "custom_footer": branding.custom_footer,
-            }
+        branding_project_id = asset.project_id
+
+    branding_data = _share_branding(db, branding_project_id) if branding_project_id else None
 
     # Resolve creator name
     creator = db.query(User).filter(User.id == link.created_by).first()
@@ -974,10 +994,19 @@ def share_with_team(
 def list_project_share_links(
     project_id: uuid.UUID,
     search: Optional[str] = Query(default=None),
+    asset_id: Optional[uuid.UUID] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     require_project_role(db, project_id, current_user, ProjectRole.viewer)
+
+    asset = None
+    if asset_id:
+        asset = db.query(Asset).filter(
+            Asset.id == asset_id, Asset.project_id == project_id, Asset.deleted_at.is_(None),
+        ).first()
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
 
     # Subquery for view_count and last_viewed_at
     activity_stats = db.query(
@@ -1000,6 +1029,7 @@ def list_project_share_links(
             sa_func.coalesce(activity_stats.c.view_count, 0).label("view_count"),
             activity_stats.c.last_viewed_at,
             ShareLink.created_at,
+            ShareLink.expires_at,
         )
         .join(Asset, ShareLink.asset_id == Asset.id)
         .outerjoin(activity_stats, ShareLink.id == activity_stats.c.share_link_id)
@@ -1024,6 +1054,7 @@ def list_project_share_links(
             sa_func.coalesce(activity_stats.c.view_count, 0).label("view_count"),
             activity_stats.c.last_viewed_at,
             ShareLink.created_at,
+            ShareLink.expires_at,
         )
         .join(Folder, ShareLink.folder_id == Folder.id)
         .outerjoin(activity_stats, ShareLink.id == activity_stats.c.share_link_id)
@@ -1054,6 +1085,7 @@ def list_project_share_links(
             sa_func.coalesce(activity_stats.c.view_count, 0).label("view_count"),
             activity_stats.c.last_viewed_at,
             ShareLink.created_at,
+            ShareLink.expires_at,
         )
         .outerjoin(activity_stats, ShareLink.id == activity_stats.c.share_link_id)
         .filter(
@@ -1074,6 +1106,14 @@ def list_project_share_links(
     # adaptation on a legacy Query union.
     results = sorted(results, key=lambda row: (row.created_at, str(row.id)), reverse=True)
 
+    # Same rule validate_share_link applies, so "expired" here means the share page refuses it.
+    now = datetime.now(timezone.utc)
+
+    contains: dict[uuid.UUID, Optional[str]] = {}
+    if asset is not None and results:
+        links = db.query(ShareLink).filter(ShareLink.id.in_([row.id for row in results])).all()
+        contains = {link.id: _link_shows_asset(db, link, asset) for link in links}
+
     return [
         ShareLinkListItem(
             id=row.id,
@@ -1087,6 +1127,9 @@ def list_project_share_links(
             view_count=row.view_count,
             last_viewed_at=row.last_viewed_at,
             created_at=row.created_at,
+            expires_at=row.expires_at,
+            is_expired=bool(row.expires_at and row.expires_at < now),
+            contains_asset=contains.get(row.id),
         )
         for row in results
     ]
@@ -1116,6 +1159,29 @@ def get_share_link_activity(
 
 
 # ── Add asset to existing share link ──────────────────────────────────────────
+
+def _link_shows_asset(db: Session, link: ShareLink, asset: Asset) -> Optional[str]:
+    """How a share link shows an asset: "direct" when the link is that asset or lists it as
+    an item, "indirect" when it reaches it through a folder or the whole project, None when
+    it does not show it.
+
+    "indirect" is whatever validate_asset_in_share accepts beyond that, so the answer agrees
+    with what the share page actually serves.
+    """
+    if link.asset_id == asset.id:
+        return "direct"
+    listed = db.query(ShareLinkItem.id).filter(
+        ShareLinkItem.share_link_id == link.id,
+        ShareLinkItem.asset_id == asset.id,
+    ).first()
+    if listed:
+        return "direct"
+    try:
+        validate_asset_in_share(db, link, asset)
+    except HTTPException:
+        return None
+    return "indirect"
+
 
 @router.post("/share/{token}/add-asset/{asset_id}", status_code=status.HTTP_200_OK)
 def add_asset_to_share_link(
@@ -1147,17 +1213,11 @@ def add_asset_to_share_link(
     if link_project_id and asset.project_id != link_project_id:
         raise HTTPException(status_code=403, detail="Asset does not belong to this share link's project")
 
-    # Check if asset is already the direct target
-    if link.asset_id == asset_id:
-        return {"detail": "Asset already included in this share link"}
-
-    # Check if asset is already in share_link_items
-    existing_item = db.query(ShareLinkItem).filter(
-        ShareLinkItem.share_link_id == link.id,
-        ShareLinkItem.asset_id == asset_id,
-    ).first()
-    if existing_item:
-        return {"detail": "Asset already included in this share link"}
+    # A link that already shows the asset is left alone. Through a folder or the whole
+    # project counts too: adding an item there would convert a folder link, or shrink a
+    # whole-project link to the items it lists.
+    if _link_shows_asset(db, link, asset) is not None:
+        return {"detail": "Asset already included in this share link", "added": False}
 
     # If this is a single-asset share link, migrate to multi-item mode
     if link.asset_id and not link.project_id:
@@ -1185,7 +1245,7 @@ def add_asset_to_share_link(
     # Add the new asset
     db.add(ShareLinkItem(share_link_id=link.id, asset_id=asset_id))
     db.commit()
-    return {"detail": "Asset added to share link"}
+    return {"detail": "Asset added to share link", "added": True}
 
 
 @router.post("/projects/{project_id}/share/multi", response_model=ShareLinkResponse, status_code=status.HTTP_201_CREATED)

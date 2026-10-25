@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { stubGeometry, restoreGeometry } from '@/test/geometry'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { useReviewStore } from '@/stores/review-store'
 
 const replace = vi.fn()
@@ -46,11 +47,13 @@ let streamUrl: string | null = null
 // When set, every version gets its own url (`stream:<versionId>`), so a test can
 // tell which version the right pane is showing from the transport's arguments.
 let streamPerVersion = false
+// Versions whose stream request fails: no url, error set (useStreamUrl's catch).
+const streamFailsFor = new Set<string>()
 vi.mock('@/hooks/use-stream-url', () => ({
-  useStreamUrl: (_assetId: string, versionId: string | null) => ({
-    url: streamPerVersion ? `stream:${versionId}` : streamUrl,
-    error: false,
-  }),
+  useStreamUrl: (_assetId: string, versionId: string | null) =>
+    versionId && streamFailsFor.has(versionId)
+      ? { url: null, error: true }
+      : { url: streamPerVersion ? `stream:${versionId}` : streamUrl, error: false },
 }))
 // AnnotationOverlay lazy-imports fabric inside a rAF; stub the exact API
 // surface it touches (new Canvas(el, opts) → setDimensions → loadFromJSON
@@ -148,6 +151,7 @@ beforeEach(() => {
   searchParamsString = 'compare=v-1'
   streamUrl = null
   streamPerVersion = false
+  streamFailsFor.clear()
   // jsdom does not implement scrollIntoView; CommentItem calls it when it
   // becomes focused (marker click → setFocusedCommentId). Unrelated to the
   // marker-click contract under test (see comment-overrides.test.tsx).
@@ -211,6 +215,33 @@ describe('CompareOverlay', () => {
     )
     // Panels still render (comments are readable), but neither side's composer does.
     expect(screen.queryByPlaceholderText('Leave your comment...')).not.toBeInTheDocument()
+  })
+
+  it('offers the comment menu on another author\'s comment in both panes only with canModerate (#492)', () => {
+    commentsByVersion['v-1'] = [makeComment('c1', 'v-1', { body: 'Left pane note' })]
+    commentsByVersion['v-3'] = [makeComment('c3', 'v-3', { body: 'Right pane note' })]
+    const props = { asset: videoAsset, versions: [makeVersion(1), makeVersion(3)], rightVersion: makeVersion(3), onClose: vi.fn() }
+    const openBoth = () => {
+      // The right panel starts open; the left one starts closed.
+      fireEvent.click(screen.getByRole('button', { name: 'Toggle left comments' }))
+      expect(screen.getByText('Left pane note')).toBeInTheDocument()
+      expect(screen.getByText('Right pane note')).toBeInTheDocument()
+    }
+
+    const { unmount } = render(<CompareOverlay {...props} />)
+    openBoth()
+    expect(screen.queryAllByRole('button', { name: 'Comment actions' })).toHaveLength(0)
+    unmount()
+
+    render(<CompareOverlay {...props} canModerate />)
+    openBoth()
+    const menus = screen.getAllByRole('button', { name: 'Comment actions' })
+    expect(menus).toHaveLength(2)
+    for (const menu of menus) {
+      fireEvent.click(menu)
+      expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+      fireEvent.click(menu)
+    }
   })
 
   it('keeps the Public / Internal toggle in the team composer', () => {
@@ -404,6 +435,66 @@ describe('CompareOverlay version-switch offset reset (#182)', () => {
     // one thing this handler does that never reaches the query string, so a URL
     // assertion alone stays green even if the switch is dropped entirely.
     expect(useReviewStore.getState().currentVersion?.id).toBe('v-2')
+  })
+
+  // The right pane lives in the store, which a reload does not keep, so the URL
+  // has to name it too or a reloaded compare comes back on the newest version (#299).
+  it('switching the right version writes it to the URL in the same write that clears the offsets', () => {
+    searchParamsString = 'compare=v-1&right=v-3&offA=1.5&offB=-0.5&offFor=v-1:v-3'
+    render(
+      <CompareOverlay
+        asset={videoAsset}
+        versions={[makeVersion(1), makeVersion(2), makeVersion(3)]}
+        rightVersion={makeVersion(3)}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(within(screen.getByTestId('compare-select-b')).getByRole('button'))
+    fireEvent.click(screen.getByRole('option', { name: /^v2$/ }))
+
+    expect(replace).toHaveBeenCalledTimes(1)
+    const url = new URL(replace.mock.calls[0][0], 'http://x')
+    expect(url.searchParams.get('compare')).toBe('v-1')
+    expect(url.searchParams.get('right')).toBe('v-2')
+    expect(['offA', 'offB', 'offFor'].map((k) => url.searchParams.get(k))).toEqual([null, null, null])
+  })
+
+  it('switching the left version names the right pane too, so a link without it becomes complete', () => {
+    searchParamsString = 'compare=v-1'
+    render(
+      <CompareOverlay
+        asset={videoAsset}
+        versions={[makeVersion(1), makeVersion(2), makeVersion(3)]}
+        rightVersion={makeVersion(3)}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(within(screen.getByTestId('compare-select-a')).getByRole('button'))
+    fireEvent.click(screen.getByRole('option', { name: /^v2$/ }))
+
+    const url = new URL(replace.mock.calls.at(-1)?.[0], 'http://x')
+    expect(url.searchParams.get('compare')).toBe('v-2')
+    expect(url.searchParams.get('right')).toBe('v-3')
+  })
+
+  it('calibrating an offset names the right pane next to the pair tag', () => {
+    searchParamsString = 'compare=v-1'
+    render(
+      <CompareOverlay
+        asset={videoAsset}
+        versions={[makeVersion(1), makeVersion(2), makeVersion(3)]}
+        rightVersion={makeVersion(3)}
+        onClose={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('offB-plus-second'))
+
+    const url = new URL(replace.mock.calls.at(-1)?.[0], 'http://x')
+    expect(url.searchParams.get('offFor')).toBe('v-1:v-3')
+    expect(url.searchParams.get('right')).toBe('v-3')
   })
 
   it('re-picking the version already shown leaves calibrated offsets alone', () => {
@@ -621,6 +712,76 @@ describe('CompareOverlay never renders a version with another pair\'s offset', (
     act(() => { vi.runAllTimers() })
     expect(transportCalls.at(-1)?.timingA.offset).toBe(0)
     expect(transportCalls.at(-1)?.timingB.offset).toBeGreaterThan(0)
+  })
+})
+
+describe('CompareOverlay restores ?right= on mount (#299)', () => {
+  // ReviewProvider reads ?right= only when it mounts. A soft navigation to a
+  // compare URL on an already-open review page keeps the provider mounted, so
+  // the store still holds whatever version was shown before; the overlay has to
+  // restore the URL's right pane itself.
+  function Page({ versions = [makeVersion(1), makeVersion(2), makeVersion(3)] }: { versions?: never[] }) {
+    const current = useReviewStore((s) => s.currentVersion)
+    return <CompareOverlay asset={videoAsset} versions={versions} rightVersion={current ?? makeVersion(3)} onClose={vi.fn()} />
+  }
+  beforeEach(() => {
+    streamPerVersion = true
+    useReviewStore.getState().setCurrentVersion(makeVersion(3))
+  })
+
+  it('switches the store to the ready version ?right= names, without a URL write', () => {
+    searchParamsString = 'compare=v-1&right=v-2'
+    render(<Page />)
+
+    expect(useReviewStore.getState().currentVersion?.id).toBe('v-2')
+    expect(transportCalls.at(-1)).toMatchObject({ urlA: 'stream:v-1', urlB: 'stream:v-2' })
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('leaves the store alone and does not write when ?right= already names the shown version', () => {
+    searchParamsString = 'compare=v-1&right=v-3'
+    render(<Page />)
+
+    expect(useReviewStore.getState().currentVersion?.id).toBe('v-3')
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('does not write when the URL has no ?right=', () => {
+    searchParamsString = 'compare=v-1'
+    render(<Page />)
+
+    expect(useReviewStore.getState().currentVersion?.id).toBe('v-3')
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('an unknown ?right= is replaced, in one write, by the version actually shown', () => {
+    searchParamsString = 'compare=v-1&right=v-9&mode=sbs&commentId=c1'
+    render(<Page />)
+
+    expect(useReviewStore.getState().currentVersion?.id).toBe('v-3')
+    expect(replace).toHaveBeenCalledTimes(1)
+    const url = new URL(replace.mock.calls[0][0], 'http://x')
+    expect(url.searchParams.get('right')).toBe('v-3')
+    expect(url.searchParams.get('compare')).toBe('v-1')
+    expect(url.searchParams.get('mode')).toBe('sbs')
+    expect(url.searchParams.get('commentId')).toBe('c1')
+  })
+
+  it('a ?right= naming a version that is not ready is replaced by the version actually shown', () => {
+    searchParamsString = 'compare=v-1&right=v-2'
+    render(<Page versions={[makeVersion(1), makeVersion(2, 'processing'), makeVersion(3)]} />)
+
+    expect(useReviewStore.getState().currentVersion?.id).toBe('v-3')
+    expect(replace).toHaveBeenCalledTimes(1)
+    expect(new URL(replace.mock.calls[0][0], 'http://x').searchParams.get('right')).toBe('v-3')
+  })
+
+  it('legacy offsets belong to the pair the URL names, not to the store version shown before the restore', () => {
+    searchParamsString = 'compare=v-1&right=v-2&offA=1.5&offB=2'
+    render(<Page />)
+
+    expect(transportCalls.filter((c) => c.urlB === 'stream:v-3' && (c.timingA.offset !== 0 || c.timingB.offset !== 0))).toEqual([])
+    expect(transportCalls.at(-1)).toMatchObject({ urlB: 'stream:v-2', timingA: { offset: 1.5 }, timingB: { offset: 2 } })
   })
 })
 
@@ -969,5 +1130,91 @@ describe('CompareOverlay annotation authoring', () => {
     )
     fireEvent.click(screen.getByTitle('Draw annotation')) // pane B (right panel open)
     expect(screen.getByTestId('annotation-canvas')).toBeInTheDocument()
+  })
+})
+
+describe('CompareOverlay stream failure (#170)', () => {
+  it('image wipe: a failed side keeps both badges and says which stream is unavailable', () => {
+    streamUrl = '/img.webp'
+    streamFailsFor.add('v-1')
+    render(
+      <CompareOverlay asset={asset} versions={[makeVersion(1), makeVersion(3)]} rightVersion={makeVersion(3)} onClose={vi.fn()} />,
+    )
+    // Previously the stage rendered nothing at all: no badges, no reason.
+    const stage = screen.getByTestId('wipe-fallback')
+    expect(within(stage).getByText('v1')).toBeInTheDocument()
+    expect(within(stage).getByText('v3')).toBeInTheDocument()
+    expect(within(stage).getByText('Stream unavailable for v1')).toBeInTheDocument()
+    expect(within(stage).queryByText('Stream unavailable for v3')).not.toBeInTheDocument()
+    // The side that did load still shows its picture, as side-by-side does.
+    expect(within(stage).getByAltText('v3')).toHaveAttribute('src', '/img.webp')
+    expect(within(stage).queryByAltText('v1')).not.toBeInTheDocument()
+  })
+
+  it('image wipe: while both streams are still loading, shows the badges and no error', () => {
+    render(
+      <CompareOverlay asset={asset} versions={[makeVersion(1), makeVersion(3)]} rightVersion={makeVersion(3)} onClose={vi.fn()} />,
+    )
+    const stage = screen.getByTestId('wipe-fallback')
+    expect(within(stage).getByText('v1')).toBeInTheDocument()
+    expect(within(stage).getByText('v3')).toBeInTheDocument()
+    expect(within(stage).queryByText(/Stream unavailable/)).not.toBeInTheDocument()
+  })
+
+  it('image side-by-side: a failed side says its stream is unavailable', () => {
+    searchParamsString = 'compare=v-1&mode=sbs'
+    streamUrl = '/img.webp'
+    streamFailsFor.add('v-3')
+    render(
+      <CompareOverlay asset={asset} versions={[makeVersion(1), makeVersion(3)]} rightVersion={makeVersion(3)} onClose={vi.fn()} />,
+    )
+    expect(screen.getByText('Stream unavailable for v3')).toBeInTheDocument()
+    expect(screen.queryByText('Stream unavailable for v1')).not.toBeInTheDocument()
+    expect(screen.getByAltText('v1')).toBeInTheDocument()
+  })
+})
+
+describe('CompareOverlay scrubber marker keyboard (#170)', () => {
+  it('Enter on a focused marker seeks to its comment', async () => {
+    commentsByVersion['v-1'] = [makeComment('c1', 'v-1')]
+    render(
+      <CompareOverlay asset={videoAsset} versions={[makeVersion(1), makeVersion(3)]} rightVersion={makeVersion(3)} onClose={vi.fn()} />,
+    )
+    const user = userEvent.setup()
+    act(() => screen.getByTestId('marker-a-c1').focus())
+    await user.keyboard('{Enter}')
+    expect(transportSeekTo).toHaveBeenCalledWith(5)
+    expect(useReviewStore.getState().focusedCommentId).toBe('c1')
+  })
+
+  it('Space on a focused marker seeks without also toggling playback', async () => {
+    // The overlay's window handler plays/pauses on Space; a Space meant for
+    // the marker must not reach it as well.
+    commentsByVersion['v-1'] = [makeComment('c1', 'v-1')]
+    render(
+      <CompareOverlay asset={videoAsset} versions={[makeVersion(1), makeVersion(3)]} rightVersion={makeVersion(3)} onClose={vi.fn()} />,
+    )
+    const user = userEvent.setup()
+    act(() => screen.getByTestId('marker-a-c1').focus())
+    await user.keyboard(' ')
+    expect(transportSeekTo).toHaveBeenCalledWith(5)
+    expect(transportToggle).not.toHaveBeenCalled()
+  })
+
+  it('Space after a mouse click on a marker still plays/pauses', async () => {
+    // Chromium focuses a button on mousedown (user-event does the same), so
+    // without care the marker keeps focus and the next Space re-activates it
+    // instead of reaching the overlay's play/pause handler.
+    commentsByVersion['v-1'] = [makeComment('c1', 'v-1')]
+    render(
+      <CompareOverlay asset={videoAsset} versions={[makeVersion(1), makeVersion(3)]} rightVersion={makeVersion(3)} onClose={vi.fn()} />,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('marker-a-c1'))
+    expect(transportSeekTo).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('marker-a-c1')).not.toHaveFocus()
+    await user.keyboard(' ')
+    expect(transportToggle).toHaveBeenCalledTimes(1)
+    expect(transportSeekTo).toHaveBeenCalledTimes(1)
   })
 })

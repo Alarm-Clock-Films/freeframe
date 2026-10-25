@@ -34,6 +34,7 @@ import { useUploadStore, currentTabId, LIVE_WINDOW_MS, RESUME_CLAIM_PREFIX, resu
 import type { UploadFile } from '../upload-store'
 import { installXhrFake, ok, type PartHandler } from '@/test/xhr-fake'
 import { signInAs } from '@/test/upload-session'
+import { answerBatch } from '@/test/assets-batch'
 
 // The upload queue is tab-wide module state: start every test from an empty one.
 beforeEach(() => __uploadQueueTesting.reset())
@@ -258,6 +259,33 @@ describe('discarding or resuming an upload that is still moving somewhere else',
     expect(refused).toMatch(/another tab or on another device/)
     expect(api.post).not.toHaveBeenCalledWith('/upload/abort', expect.anything())
     expect(rowOf('row-1').status).toBe('elsewhere')
+  })
+
+  it('refuses to discard while a cancelled resume of it is still waiting for /parts', async () => {
+    // Cancel puts the resume back to plain `interrupted`, which offers Discard,
+    // but its run keeps its controller until `/parts` answers. That controller
+    // sends nothing, and counting it as this tab sending let the Discard abort
+    // an upload the server had just seen another device move.
+    useUploadStore.setState({ files: [row({ status: 'interrupted', ownerTab: undefined })] })
+    let answerResume: (info: unknown) => void = () => {}
+    vi.mocked(api.get)
+      .mockImplementationOnce(() => new Promise((resolve) => { answerResume = resolve }) as never)
+      .mockResolvedValue(resumeInfo(secondsAgo(2)) as never)
+
+    useUploadStore.getState().resumeUpload('row-1', new File([new Uint8Array(10)], 'clip.mp4'))
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledTimes(1))
+    useUploadStore.getState().cancelUpload('row-1')
+    expect(rowOf('row-1').status).toBe('interrupted')
+    expect(__uploadQueueTesting.hasAbortController('row-1')).toBe(true)
+
+    const refused = await useUploadStore.getState().discardUpload('row-1')
+
+    expect(refused).toMatch(/another tab or on another device/)
+    expect(vi.mocked(api.post).mock.calls.map(([path]) => path)).not.toContain('/upload/abort')
+    expect(rowOf('row-1').status).toBe('elsewhere')
+    answerResume(resumeInfo(secondsAgo(2)))
+    await vi.waitFor(() => expect(__uploadQueueTesting.runningIds()).toEqual([]))
+    expect(put).not.toHaveBeenCalled()
   })
 
   it('does not resume into an upload another tab is still sending parts into', async () => {
@@ -645,6 +673,37 @@ describe('writing to storage every tab shares', () => {
     expect(storedFiles().map((f) => f.id)).toEqual(['row-1'])
   })
 
+  it('writes its own change to a row nobody stamps', () => {
+    // History rows carry no tab and no heartbeat. Judged on the stamp alone,
+    // the two missing stamps tied and storage won, so a refused Discard's
+    // `elsewhere`, or a Discard's error, never left this tab.
+    const createdAt = Date.now() - 60_000
+    const before = { id: 'history-asset-1', status: 'interrupted' as const, createdAt, uploadId: undefined }
+    seedStorage([before])
+    write([before])
+
+    const until = Date.now() + 60_000
+    write([{ ...before, status: 'elsewhere', elsewhereUntil: until }])
+
+    expect(storedFiles()[0].status).toBe('elsewhere')
+    expect(storedFiles()[0].elsewhereUntil).toBe(until)
+  })
+
+  it('does not write its unchanged copy of an unstamped row over another tab\'s change', () => {
+    // The other half of the same tie: a tab that has not touched the row since
+    // its last write has nothing newer to say than the tab that did.
+    const createdAt = Date.now() - 60_000
+    const before = { id: 'history-asset-1', status: 'interrupted' as const, createdAt, uploadId: undefined }
+    write([before])
+    const until = Date.now() + 60_000
+    seedStorage([{ ...before, status: 'elsewhere', elsewhereUntil: until }])
+
+    write([before])
+
+    expect(storedFiles()[0].status).toBe('elsewhere')
+    expect(storedFiles()[0].elsewhereUntil).toBe(until)
+  })
+
   it('lets this tab remove its own row', () => {
     const own = { id: 'row-1', ownerTab: currentTabId(), heartbeatAt: Date.now() }
     seedStorage([own])
@@ -684,7 +743,7 @@ describe('polling a row whose upload is running on another device', () => {
     // row already said -- so the early return fired and the row kept offering
     // Resume and Discard for an upload that was still running.
     useUploadStore.setState({ files: [row({ status: 'interrupted', ownerTab: undefined })] })
-    vi.mocked(api.get).mockResolvedValue(assetStillUploading(secondsAgo(5)) as never)
+    vi.mocked(api.get).mockImplementation(answerBatch([assetStillUploading(secondsAgo(5))]) as never)
 
     await useUploadStore.getState().refreshProcessingItems()
 
@@ -694,8 +753,8 @@ describe('polling a row whose upload is running on another device', () => {
 
   it('leaves it interrupted once the other device has stopped', async () => {
     useUploadStore.setState({ files: [row({ status: 'interrupted', ownerTab: undefined })] })
-    vi.mocked(api.get).mockResolvedValue(
-      assetStillUploading(new Date(Date.now() - LIVE_WINDOW_MS - 1000)) as never,
+    vi.mocked(api.get).mockImplementation(
+      answerBatch([assetStillUploading(new Date(Date.now() - LIVE_WINDOW_MS - 1000))]) as never,
     )
 
     await useUploadStore.getState().refreshProcessingItems()
@@ -717,7 +776,7 @@ describe('polling a row whose upload is running on another device', () => {
         row({ status: 'interrupted', ownerTab: currentTabId(), heartbeatAt: Date.now() - 5000 }),
       ],
     })
-    vi.mocked(api.get).mockResolvedValue(assetStillUploading(secondsAgo(5)) as never)
+    vi.mocked(api.get).mockImplementation(answerBatch([assetStillUploading(secondsAgo(5))]) as never)
 
     await useUploadStore.getState().refreshProcessingItems()
 
@@ -730,7 +789,7 @@ describe('polling a row whose upload is running on another device', () => {
     // into switching the poll off. A row this tab never owned, with the server
     // reporting movement, is exactly what `elsewhere` exists to say.
     useUploadStore.setState({ files: [row({ status: 'interrupted', ownerTab: OTHER_TAB })] })
-    vi.mocked(api.get).mockResolvedValue(assetStillUploading(secondsAgo(5)) as never)
+    vi.mocked(api.get).mockImplementation(answerBatch([assetStillUploading(secondsAgo(5))]) as never)
 
     await useUploadStore.getState().refreshProcessingItems()
 
@@ -741,7 +800,7 @@ describe('polling a row whose upload is running on another device', () => {
     useUploadStore.setState({
       files: [row({ status: 'interrupted', ownerTab: undefined, progress: 41 })],
     })
-    vi.mocked(api.get).mockResolvedValue(assetStillUploading(secondsAgo(5)) as never)
+    vi.mocked(api.get).mockImplementation(answerBatch([assetStillUploading(secondsAgo(5))]) as never)
 
     await useUploadStore.getState().refreshProcessingItems()
 

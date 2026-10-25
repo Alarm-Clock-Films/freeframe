@@ -106,10 +106,10 @@ def test_dispatch_is_inline_on_vercel_even_with_another_broker(monkeypatch):
     monkeypatch.setattr(type(settings), "uses_vercel_queues", property(lambda self: False))
     monkeypatch.setattr(type(settings), "running_on_vercel", property(lambda self: True))
     task = MagicMock()
-    with patch.object(ca.threading, "Thread") as thread:
+    with patch.object(ca, "_dispatch_executor") as pool:
         ca.send_task_safe(task)
-    thread.assert_not_called()
-    task.delay.assert_called_once_with()
+    pool.submit.assert_not_called()
+    task.apply_async.assert_called_once_with(args=(), kwargs={}, ignore_result=True)
 
 
 def test_dispatch_is_inline_on_vercel_queues(monkeypatch):
@@ -117,21 +117,22 @@ def test_dispatch_is_inline_on_vercel_queues(monkeypatch):
 
     monkeypatch.setattr(type(settings), "uses_vercel_queues", property(lambda self: True))
     task = MagicMock()
-    with patch.object(ca.threading, "Thread") as thread:
+    with patch.object(ca, "_dispatch_executor") as pool:
         ca.send_task_safe(task, "a", k=1)
-    thread.assert_not_called()
-    task.delay.assert_called_once_with("a", k=1)
+    pool.submit.assert_not_called()
+    task.apply_async.assert_called_once_with(args=("a",), kwargs={"k": 1}, ignore_result=True)
 
 
-def test_dispatch_stays_on_a_background_thread_elsewhere(monkeypatch):
+def test_dispatch_stays_on_the_background_pool_elsewhere(monkeypatch):
     from apps.api.tasks import celery_app as ca
 
     monkeypatch.setattr(type(settings), "uses_vercel_queues", property(lambda self: False))
     monkeypatch.setattr(type(settings), "running_on_vercel", property(lambda self: False))
-    with patch.object(ca.threading, "Thread") as thread:
-        ca.send_task_safe(MagicMock(), "a")
-    thread.assert_called_once()
-    thread.return_value.start.assert_called_once()
+    task = MagicMock()
+    with patch.object(ca, "_dispatch_executor") as pool:
+        ca.send_task_safe(task, "a")
+    pool.submit.assert_called_once_with(ca._dispatch_task, task, ("a",), {})
+    task.apply_async.assert_not_called()
 
 
 def test_worker_entrypoint_registers_every_routed_task():

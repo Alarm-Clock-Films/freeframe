@@ -95,12 +95,12 @@ async function openCleanProject(page: Page, label: string, account: Account) {
   const project = await createProject(account, `E2E ${label} ${Date.now()}`)
   await page.goto(`/projects/${project.id}`)
   await expect(page.getByText('No assets')).toBeVisible()
-  // The page takes a drop only once it knows the account may upload here: the role comes from the
-  // project's members matched against `/auth/me`, and until both have answered it is "viewer": the drop
-  // region's handlers are attached but return early while it is not enabled (`useFileDropRegion`), so a
-  // drop goes nowhere (no initiate, no row). Seen in WebKit when those
-  // reads were slow to answer (they were being refused with 429, see above). The header's Upload button
-  // is drawn on the same condition; the empty project's own is drawn regardless, so two means known.
+  // The page decides on a drop once it knows the account's role: the role comes from the project's
+  // members matched against `/auth/me`, and a drop made before both have answered is held until then
+  // (#546). Waiting for the role keeps the drop starting at once, which this spec times. Seen in WebKit
+  // when those reads were slow to answer (they were being refused with 429, see above). The header's
+  // Upload menu and the empty project's Upload button are both drawn only for a role that may upload,
+  // so two means known.
   await expect(page.getByRole('button', { name: 'Upload', exact: true })).toHaveCount(2, { timeout: 60_000 })
   return { account, project }
 }

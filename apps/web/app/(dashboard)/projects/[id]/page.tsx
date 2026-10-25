@@ -4,7 +4,6 @@ import * as React from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import Link from "next/link";
-import * as Dialog from "@radix-ui/react-dialog";
 import {
   Upload,
   X,
@@ -20,27 +19,24 @@ import {
   FileText,
   MoreHorizontal,
   Users,
+  Settings,
 } from "lucide-react";
-import {
-  cn,
-  formatRelativeTime,
-  formatBytes,
-  assetNameFromFile,
-  uploadNameForFile,
-} from "@/lib/utils";
-import { api } from "@/lib/api";
+import { cn, formatRelativeTime, formatBytes } from "@/lib/utils";
+import { api, ApiError } from "@/lib/api";
 import { withBasePath } from "@/lib/base-path";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Avatar } from "@/components/shared/avatar";
 import { AssetGrid } from "@/components/projects/asset-grid";
 import { DownloadMenu } from "@/components/shared/download-menu";
 import { downloadAsset, fetchAssetDownloadOptions } from "@/lib/asset-download";
 import { CommentPanel } from "@/components/review/comment-panel";
-import { UploadZone } from "@/components/upload/upload-zone";
+import { UploadMenu } from "@/components/upload/upload-menu";
 import { useFileDropRegion } from "@/components/projects/use-file-drop-region";
-import { useUploadStore } from "@/stores/upload-store";
+import { startDrop } from "@/lib/upload-drop";
+import { currentSubject } from "@/lib/upload-owner";
+import type { Collected } from "@/lib/upload-folder-walk";
 import { useToast } from "@/components/shared/toast";
+import { useBranding } from "@/components/shared/branding-provider";
 import { useAuthStore } from "@/stores/auth-store";
 import { useViewStore } from "@/stores/view-store";
 import { useBreadcrumbStore } from "@/stores/breadcrumb-store";
@@ -57,7 +53,6 @@ import {
 } from "@/components/projects/share-link-detail";
 import { NameDialog } from "@/components/projects/name-dialog";
 import { ShareCreateDialog } from "@/components/projects/share-create-dialog";
-import { ProjectMembersDialog } from "@/components/projects/project-members-dialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { useRefetchOnUploadStatus } from "@/hooks/use-upload-refetch";
@@ -76,9 +71,8 @@ export default function ProjectDetailPage() {
   const searchParams = useSearchParams();
   const projectId = params.id as string;
 
-  const [uploadOpen, setUploadOpen] = React.useState(false);
-  const [assetName, setAssetName] = React.useState("");
-  const [pendingFiles, setPendingFiles] = React.useState<File[]>([]);
+  // The Upload menu, opened from the toolbar button or the empty state.
+  const [uploadMenuOpen, setUploadMenuOpen] = React.useState(false);
   const [selectedAsset, setSelectedAsset] =
     React.useState<AssetResponse | null>(null);
   const [shareLinksExpanded, setShareLinksExpanded] = React.useState(true);
@@ -118,7 +112,6 @@ export default function ProjectDetailPage() {
     projectId?: string | null;
   } | null>(null);
   const [shareMode, setShareMode] = React.useState(false);
-  const [membersDialogOpen, setMembersDialogOpen] = React.useState(false);
   const [pendingBulkDelete, setPendingBulkDelete] = React.useState<{
     assetIds: string[];
     folderIds: string[];
@@ -133,9 +126,18 @@ export default function ProjectDetailPage() {
   >(null);
   const [purgeError, setPurgeError] = React.useState<string | null>(null);
 
-  const startUploads = useUploadStore((s) => s.startUploads);
   const toast = useToast();
-  const { user } = useAuthStore();
+  const { user, userFetched } = useAuthStore();
+  const { poweredByFreeframe } = useBranding();
+
+  // A folder write the server refused says why: a name already taken where the
+  // folder would land, or a trashed item the retention purge has since removed.
+  const reportRefusal = React.useCallback(
+    (err: unknown, fallback: string) => {
+      toast.error(err instanceof ApiError ? err.detail : fallback);
+    },
+    [toast],
+  );
 
   const {
     tree,
@@ -285,7 +287,7 @@ export default function ProjectDetailPage() {
     return map;
   }, [authorUsers, user]);
 
-  const { data: members } = useSWR<ProjectMember[]>(
+  const { data: members, error: membersError } = useSWR<ProjectMember[]>(
     `/projects/${projectId}/members`,
     () => api.get<ProjectMember[]>(`/projects/${projectId}/members`),
   );
@@ -316,6 +318,28 @@ export default function ProjectDetailPage() {
   const canManageMembers = currentRole === "owner";
   const canSeeShareLinks = currentRole === "owner" || currentRole === "editor";
   const canComment = currentRole !== "viewer";
+  // Until the members and the signed-in user have both answered, the role
+  // above reads "viewer" without anyone being one. A file dropped then is held
+  // rather than refused, and decided once they answer. A 403 from the members
+  // request is an answer: the caller is not a member (a public project lets
+  // anyone in to view), so they may not upload. Any other failure, or a user
+  // that never loads, hands the drop to the queue instead: the server checks
+  // the role on every upload, and the queue says "Sign in to upload" when there
+  // is no session.
+  const notAMember =
+    membersError instanceof ApiError && membersError.status === 403;
+  const dropRole: "wait" | "allow" | "refuse" = notAMember
+    ? "refuse"
+    : members !== undefined && user
+      ? canUpload
+        ? "allow"
+        : "refuse"
+      : membersError !== undefined || (userFetched && !user)
+        ? "allow"
+        : "wait";
+  const mayDropFiles = dropRole !== "refuse";
+  // delete_comment lets a project owner remove anyone's comment.
+  const canModerate = currentRole === "owner";
 
   // One folder's share link, from its menu in the tree, grid or list.
   function openFolderShareDialog(folderId: string, folderName: string) {
@@ -372,11 +396,6 @@ export default function ProjectDetailPage() {
   }, [mutateAssets, mutateSubfolders]);
   useRefetchOnUploadStatus(projectId, refetchGrid);
 
-  const handleFilesSelected = (files: File[]) => {
-    setPendingFiles(files);
-    if (files.length > 0) setAssetName(assetNameFromFile(files[0].name));
-  };
-
   // ─── Drop files onto the asset area ─────────────────────────────────────
   //
   // The drop target is the whole content region rather than the grid, so the
@@ -385,39 +404,77 @@ export default function ProjectDetailPage() {
   // blank space below a short row of cards.
   //
   // Not the trash and not the share-link list: neither can receive an upload,
-  // and `canUpload` is owner/editor, so a reviewer never gets an affordance
-  // that ends in a 403. Whether a dialog is open is deliberately not part of
-  // it; see `useFileDropRegion` for why naming them one by one does not work.
-  const canDropFiles = canUpload && !showTrash && !showShareLinks;
+  // and `mayDropFiles` is owner/editor once the role is known, so a reviewer
+  // never gets an affordance that ends in a 403. Whether a dialog is open is
+  // deliberately not part of it; see `useFileDropRegion` for why naming them
+  // one by one does not work.
+  const canDropFiles = mayDropFiles && !showTrash && !showShareLinks;
 
   /**
-   * Hands a drop or pick to the upload queue. With no session the queue takes
-   * none of it, since an upload belongs to the account that added it, and the
-   * user is told once for the whole drop.
+   * Starts a drop or a pick into `folderId`, straight away: its folders are
+   * made under that one and each file is queued into its own, named after the
+   * file (`startDrop`). What the drop left out is said in the Uploads panel.
+   * With no session nothing is queued, since an upload belongs to the account
+   * that added it, and the user is told once for the whole drop. `owner` is
+   * the account the drop was made as, read when it was made: another tab can
+   * sign in as someone else before a held drop starts.
    */
-  const queueUploads = React.useCallback(
-    (items: Parameters<typeof startUploads>[0], folderId: string | null) => {
-      const ids = startUploads(items, projectId, project?.name, folderId);
-      if (items.length > 0 && ids.length === 0) toast.error("Sign in to upload");
+  const queueDrop = React.useCallback(
+    (
+      folderId: string | null,
+      dropped: Collected | Promise<Collected>,
+      owner: string | null,
+    ) => {
+      void startDrop(
+        dropped,
+        { projectId, projectName: project?.name, folderId },
+        owner,
+      ).then((outcome) => {
+        if (outcome.kind === "signed-out") toast.error("Sign in to upload");
+        if (outcome.kind === "account-changed")
+          toast.error("Another account signed in, so nothing was uploaded");
+      });
     },
-    [startUploads, projectId, project?.name, toast],
+    [projectId, project?.name, toast],
   );
 
+  // Drops made while the role is still loading, each with the project it was
+  // made on so a drop never lands in a project the user has since left. Drops
+  // held for a project the user has left are discarded on purpose. What a drop
+  // held is read during the drop all the same (it cannot be read later), and
+  // only started once the role is known.
+  const heldDrops = React.useRef<
+    {
+      projectId: string;
+      folderId: string | null;
+      dropped: Promise<Collected>;
+      owner: string | null;
+    }[]
+  >([]);
+
   const startDroppedUploads = React.useCallback(
-    (folderId: string | null, files: File[]) => {
-      // Straight to the queue rather than through the dialog. Dragging a file
-      // onto the project has already said everything the dialog asks: which
-      // file, which folder, and the name comes from the file. The single-file
-      // rename field is skipped; the row in the uploads panel takes the rename
-      // while the file waits or goes up. One call for the whole drop, so the
-      // files keep their order and start in turn.
-      queueUploads(
-        files.map((file) => ({ file, assetName: assetNameFromFile(file.name) })),
-        folderId,
-      );
+    (folderId: string | null, dropped: Promise<Collected>) => {
+      const owner = currentSubject();
+      if (dropRole === "wait") {
+        heldDrops.current.push({ projectId, folderId, dropped, owner });
+        return;
+      }
+      queueDrop(folderId, dropped, owner);
     },
-    [queueUploads],
+    [dropRole, projectId, queueDrop],
   );
+
+  React.useEffect(() => {
+    if (dropRole === "wait") return;
+    const held = heldDrops.current.filter((d) => d.projectId === projectId);
+    heldDrops.current = [];
+    if (held.length === 0) return;
+    if (dropRole === "refuse") {
+      toast.error("You don't have permission to upload to this project");
+      return;
+    }
+    for (const d of held) queueDrop(d.folderId, d.dropped, d.owner);
+  }, [dropRole, projectId, queueDrop, toast]);
 
   const {
     regionRef: dropRegion,
@@ -432,18 +489,13 @@ export default function ProjectDetailPage() {
     onUploadFiles: startDroppedUploads,
   });
 
-  const handleStartUpload = () => {
-    queueUploads(
-      pendingFiles.map((file) => ({
-        file,
-        assetName: uploadNameForFile(file.name, assetName, pendingFiles.length),
-      })),
-      currentFolderId,
-    );
-    setPendingFiles([]);
-    setAssetName("");
-    setUploadOpen(false);
-  };
+  // A pick from the Upload menu starts at once, into the folder on screen.
+  // The menu is only offered once the role allows uploading, so there is
+  // nothing to hold.
+  const handlePick = React.useCallback(
+    (picked: Collected) => queueDrop(currentFolderId, picked, currentSubject()),
+    [queueDrop, currentFolderId],
+  );
 
   const handleSelectFolder = React.useCallback(
     (folderId: string | null) => {
@@ -508,7 +560,11 @@ export default function ProjectDetailPage() {
                 : undefined
             }
             onRenameFolder={async (id, name) => {
-              await renameFolder(id, name);
+              try {
+                await renameFolder(id, name);
+              } catch (err) {
+                reportRefusal(err, "Could not rename the folder");
+              }
               mutateSubfolders();
             }}
             onDeleteFolder={async (id) => {
@@ -518,15 +574,19 @@ export default function ProjectDetailPage() {
               mutateSubfolders();
             }}
             onShareFolder={canShare ? openFolderShareDialog : undefined}
-            // `canUpload`, not `canDropFiles`. What the main pane is showing
+            // `mayDropFiles`, not `canDropFiles`. What the main pane is showing
             // says nothing about the sidebar: a folder row means "upload into
             // this folder" while the trash or the share-link list is open just
             // as much as it does beside the grid. Only the permission applies.
-            onDropFiles={canUpload ? handleDropFilesToFolder : undefined}
-            onFileDragOverFolder={canUpload ? setFolderTarget : undefined}
+            onDropFiles={mayDropFiles ? handleDropFilesToFolder : undefined}
+            onFileDragOverFolder={mayDropFiles ? setFolderTarget : undefined}
             fileDragTarget={fileDragFolderId}
             onDropItems={async (targetFolderId, assetIds, folderIds) => {
-              await bulkMove(assetIds, folderIds, targetFolderId);
+              try {
+                await bulkMove(assetIds, folderIds, targetFolderId);
+              } catch (err) {
+                reportRefusal(err, "Could not move the items");
+              }
               mutateAssets();
               mutateSubfolders();
             }}
@@ -724,7 +784,11 @@ export default function ProjectDetailPage() {
                         <button
                           className="text-xs text-accent hover:underline"
                           onClick={async () => {
-                            await restoreFolder(item.id);
+                            try {
+                              await restoreFolder(item.id);
+                            } catch (err) {
+                              reportRefusal(err, "Could not restore the folder");
+                            }
                             mutateTrash();
                             mutateAssets();
                             mutateSubfolders();
@@ -765,7 +829,11 @@ export default function ProjectDetailPage() {
                         <button
                           className="text-xs text-accent hover:underline"
                           onClick={async () => {
-                            await restoreAsset(item.id);
+                            try {
+                              await restoreAsset(item.id);
+                            } catch (err) {
+                              reportRefusal(err, "Could not restore the asset");
+                            }
                             mutateTrash();
                             mutateAssets();
                             mutateSubfolders();
@@ -809,7 +877,9 @@ export default function ProjectDetailPage() {
               selectedAssetId={selectedAsset?.id}
               selectionShortcuts
               onDeselectAll={() => setSelectedAsset(null)}
-              onUpload={() => setUploadOpen(true)}
+              // The toolbar's Upload menu, which this opens, is there only
+              // for a role that may upload.
+              onUpload={canUpload ? () => setUploadMenuOpen(true) : undefined}
               onAssetSelect={(asset, e) => {
                 e?.stopPropagation();
                 setSelectedAsset(asset as AssetResponse);
@@ -819,7 +889,11 @@ export default function ProjectDetailPage() {
               }
               onFolderOpen={(folder) => handleSelectFolder(folder.id)}
               onFolderRename={async (id, name) => {
-                await renameFolder(id, name);
+                try {
+                  await renameFolder(id, name);
+                } catch (err) {
+                  reportRefusal(err, "Could not rename the folder");
+                }
                 mutateSubfolders();
               }}
               onFolderDelete={async (id) => {
@@ -842,7 +916,11 @@ export default function ProjectDetailPage() {
               onFileDragOverFolder={canDropFiles ? setFolderTarget : undefined}
               fileDragTarget={fileDragFolderId}
               onDropToFolder={async (targetFolderId, assetIds, folderIds) => {
-                await bulkMove(assetIds, folderIds, targetFolderId);
+                try {
+                  await bulkMove(assetIds, folderIds, targetFolderId);
+                } catch (err) {
+                  reportRefusal(err, "Could not move the items");
+                }
                 mutateAssets();
                 mutateSubfolders();
               }}
@@ -868,7 +946,11 @@ export default function ProjectDetailPage() {
               onAssetRename={(asset) => setAssetToRename(asset as AssetResponse)}
               onAssetDelete={(asset) => setAssetToDelete(asset as AssetResponse)}
               onBulkMove={async (assetIds, folderIds, targetFolderId) => {
-                await bulkMove(assetIds, folderIds, targetFolderId);
+                try {
+                  await bulkMove(assetIds, folderIds, targetFolderId);
+                } catch (err) {
+                  reportRefusal(err, "Could not move the items");
+                }
                 mutateAssets();
                 mutateSubfolders();
                 mutateTree();
@@ -908,13 +990,26 @@ export default function ProjectDetailPage() {
               actions={
                 <>
                   {canManageMembers && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setMembersDialogOpen(true)}
-                    >
-                      <Users className="h-4 w-4" />
-                    </Button>
+                    <>
+                      <Button variant="secondary" size="sm" asChild>
+                        <Link
+                          href={`/projects/${projectId}/settings?tab=people`}
+                          aria-label="Members"
+                          title="Members"
+                        >
+                          <Users className="h-4 w-4" />
+                        </Link>
+                      </Button>
+                      <Button variant="secondary" size="sm" asChild>
+                        <Link
+                          href={`/projects/${projectId}/settings`}
+                          aria-label="Project settings"
+                          title="Project settings"
+                        >
+                          <Settings className="h-4 w-4" />
+                        </Link>
+                      </Button>
+                    </>
                   )}
                   {canShare && (
                     <Button
@@ -939,79 +1034,23 @@ export default function ProjectDetailPage() {
                     </button>
                   )}
                   {canUpload && (
-                    <Button size="sm" onClick={() => setUploadOpen(true)}>
-                      <Upload className="h-4 w-4" />
-                      Upload
-                    </Button>
+                    <UploadMenu
+                      open={uploadMenuOpen}
+                      onOpenChange={setUploadMenuOpen}
+                      onPick={handlePick}
+                      trigger={
+                        <Button size="sm">
+                          <Upload className="h-4 w-4" />
+                          Upload
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </Button>
+                      }
+                    />
                   )}
                 </>
               }
             />
           )}
-
-          {/* Upload dialog */}
-          <Dialog.Root open={uploadOpen} onOpenChange={setUploadOpen}>
-            <Dialog.Portal>
-              <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
-              <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] rounded-xl border border-border bg-bg-secondary p-6 shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
-                <Dialog.Close className="absolute right-4 top-4 text-text-tertiary hover:text-text-primary transition-colors">
-                  <X className="h-4 w-4" />
-                </Dialog.Close>
-                <Dialog.Title className="text-base font-semibold text-text-primary">
-                  Upload asset
-                </Dialog.Title>
-                <Dialog.Description className="mt-1 text-sm text-text-secondary">
-                  Add new media to this project.
-                </Dialog.Description>
-                <div className="mt-4 space-y-4">
-                  {pendingFiles.length === 0 ? (
-                    <UploadZone onFilesSelected={handleFilesSelected} />
-                  ) : (
-                    <>
-                      <div className="rounded-lg border border-border bg-bg-tertiary">
-                        <div className="px-3 py-2 text-xs font-medium text-text-tertiary border-b border-border">
-                          {pendingFiles.length} file{pendingFiles.length !== 1 ? "s" : ""} selected
-                        </div>
-                        <div className="max-h-40 overflow-y-auto divide-y divide-border">
-                          {pendingFiles.map((f, i) => (
-                            <div key={i} className="flex items-center justify-between px-3 py-1.5">
-                              <span className="text-sm text-text-primary truncate mr-2">{f.name}</span>
-                              <span className="text-xs text-text-tertiary shrink-0">
-                                {f.size < 1024 * 1024
-                                  ? `${(f.size / 1024).toFixed(0)} KB`
-                                  : `${(f.size / (1024 * 1024)).toFixed(1)} MB`}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      {pendingFiles.length === 1 && (
-                        <Input
-                          label="Asset name"
-                          value={assetName}
-                          onChange={(e) => setAssetName(e.target.value)}
-                          placeholder="e.g. Hero Video Final"
-                        />
-                      )}
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setPendingFiles([])}
-                        >
-                          Change files
-                        </Button>
-                        <Button size="sm" onClick={handleStartUpload}>
-                          Start upload
-                        </Button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
         </div>
       </div>
       {showRegionFrame && (
@@ -1028,7 +1067,19 @@ export default function ProjectDetailPage() {
 
       {/* ─── Right Panel (Comments + Fields tabs, or Share Link Settings) ─ */}
       {rightPanelOpen && (
-        <div className="hidden xl:flex w-[360px] flex-col border-l border-border bg-bg-secondary shrink-0">
+        <div
+          className={cn(
+            "hidden xl:flex w-[360px] flex-col border-l border-border bg-bg-secondary shrink-0",
+            // The shell's floating "Powered by FreeFrame" badge sits 1rem from
+            // the window's bottom-right corner, and this panel runs into that
+            // corner: the badge (30px tall) was drawn over the right half of
+            // "Open in viewer to comment" and took the click, opening the
+            // repository instead of the viewer. The reserve is the badge's
+            // offset and height plus a gap, so whatever the tab, the panel's
+            // last control ends above it. See the badge in (dashboard)/layout.tsx.
+            poweredByFreeframe && "pb-[calc(3.5rem+env(safe-area-inset-bottom))]",
+          )}
+        >
           {showShareLinks && selectedShareLink ? (
             <ShareLinkSettingsPanel token={selectedShareLink} />
           ) : (
@@ -1076,6 +1127,7 @@ export default function ProjectDetailPage() {
                       <CommentPanel
                         comments={comments as any}
                         currentUserId={user?.id}
+                        canModerate={canModerate}
                         // Without these the panel reads the review store, which
                         // still holds whatever asset was opened last -- so the
                         // export ran against the wrong asset instead of the one
@@ -1281,7 +1333,11 @@ export default function ProjectDetailPage() {
         placeholder="Folder name"
         submitLabel="Create"
         onSubmit={async (name) => {
-          await createFolder(name, folderDialogParentId);
+          try {
+            await createFolder(name, folderDialogParentId);
+          } catch (err) {
+            reportRefusal(err, "Could not create the folder");
+          }
           mutateAssets();
           mutateSubfolders();
         }}
@@ -1311,14 +1367,6 @@ export default function ProjectDetailPage() {
           setSelectedShareLink(token);
           setShowTrash(false);
         }}
-      />
-
-      {/* Project members dialog */}
-      <ProjectMembersDialog
-        open={membersDialogOpen}
-        onOpenChange={setMembersDialogOpen}
-        projectId={projectId}
-        projectName={project?.name ?? ""}
       />
 
       {/* Bulk delete confirmation */}
