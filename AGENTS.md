@@ -187,6 +187,13 @@ Rules for agents:
 - **Don't cut releases or tags** unless explicitly asked — releases are manual and CHANGELOG-driven.
 - Default user-facing install/deploy instructions to `stable` (see the README "Release channels" table).
 
+### Syncing this fork with upstream
+
+This repo is a fork of `Techiebutler/freeframe`. When GitHub says the fork is behind
+`Techiebutler/freeframe:main`, follow [`docs/fork-sync.md`](docs/fork-sync.md):
+merge (never rebase) upstream into a branch, keep both sides of each conflict, run the CI checks,
+and land it through a PR merged with **"Create a merge commit"**.
+
 ---
 
 ## Finding things & getting help
