@@ -63,6 +63,19 @@ export function useFolders(projectId: string) {
     await mutateTree()
   }
 
+  // Permanent: rows and stored files are gone. Only items already in the trash.
+  async function deleteAssetForever(assetId: string): Promise<void> {
+    await api.delete(`/assets/${assetId}/permanent`)
+  }
+
+  async function deleteFolderForever(folderId: string): Promise<void> {
+    await api.delete(`/folders/${folderId}/permanent`)
+  }
+
+  async function emptyTrash(): Promise<void> {
+    await api.delete(`/projects/${projectId}/trash`)
+  }
+
   return {
     tree: tree ?? [],
     mutateTree,
@@ -74,6 +87,9 @@ export function useFolders(projectId: string) {
     bulkMove,
     restoreAsset,
     restoreFolder,
+    deleteAssetForever,
+    deleteFolderForever,
+    emptyTrash,
   }
 }
 

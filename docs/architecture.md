@@ -252,7 +252,10 @@ review workflow.
 `Notification` and `ActivityLog`. Nothing filters the column automatically — every query does
 it by hand. Soft deletion is also not permanent: `tasks/cleanup_tasks.py` hard-deletes
 soft-deleted rows and reclaims their S3 objects after `SOFT_DELETE_RETENTION_DAYS`
-(default 30).
+(default 30). Editors can also do this straight away from a project's **Recently Deleted**
+view (**Delete forever** on one item, or **Empty trash**): `DELETE /assets/{id}/permanent`,
+`DELETE /folders/{id}/permanent` and `DELETE /projects/{id}/trash` in `routers/folders.py`
+run the same cascades, and only on items already in the trash.
 
 Key entity relationships:
 

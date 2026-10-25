@@ -125,6 +125,13 @@ export default function ProjectDetailPage() {
   } | null>(null);
   const [assetToRename, setAssetToRename] = React.useState<AssetResponse | null>(null);
   const [assetToDelete, setAssetToDelete] = React.useState<AssetResponse | null>(null);
+  // What the "Delete forever" confirmation is about: one trashed item, or the whole trash.
+  const [pendingPurge, setPendingPurge] = React.useState<
+    | { kind: "asset" | "folder"; id: string; name: string }
+    | { kind: "all" }
+    | null
+  >(null);
+  const [purgeError, setPurgeError] = React.useState<string | null>(null);
 
   const startUploads = useUploadStore((s) => s.startUploads);
   const toast = useToast();
@@ -141,6 +148,9 @@ export default function ProjectDetailPage() {
     bulkMove,
     restoreAsset,
     restoreFolder,
+    deleteAssetForever,
+    deleteFolderForever,
+    emptyTrash,
   } = useFolders(projectId);
 
   const { trash, mutateTrash } = useTrash(projectId);
@@ -676,9 +686,22 @@ export default function ProjectDetailPage() {
             />
           ) : showTrash ? (
             <div className="flex-1 overflow-y-auto">
-              <h2 className="text-sm font-medium text-text-primary mb-3">
-                Recently Deleted
-              </h2>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-medium text-text-primary">
+                  Recently Deleted
+                </h2>
+                {(trash.folders.length > 0 || trash.assets.length > 0) && (
+                  <button
+                    className="text-xs text-status-error hover:underline"
+                    onClick={() => {
+                      setPurgeError(null);
+                      setPendingPurge({ kind: "all" });
+                    }}
+                  >
+                    Empty trash
+                  </button>
+                )}
+              </div>
               {trash.folders.length === 0 && trash.assets.length === 0 ? (
                 <p className="text-xs text-text-tertiary">No deleted items</p>
               ) : (
@@ -697,17 +720,32 @@ export default function ProjectDetailPage() {
                           Folder
                         </span>
                       </div>
-                      <button
-                        className="text-xs text-accent hover:underline shrink-0"
-                        onClick={async () => {
-                          await restoreFolder(item.id);
-                          mutateTrash();
-                          mutateAssets();
-                          mutateSubfolders();
-                        }}
-                      >
-                        Restore
-                      </button>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button
+                          className="text-xs text-accent hover:underline"
+                          onClick={async () => {
+                            await restoreFolder(item.id);
+                            mutateTrash();
+                            mutateAssets();
+                            mutateSubfolders();
+                          }}
+                        >
+                          Restore
+                        </button>
+                        <button
+                          className="text-xs text-status-error hover:underline"
+                          onClick={() => {
+                            setPurgeError(null);
+                            setPendingPurge({
+                              kind: "folder",
+                              id: item.id,
+                              name: item.name,
+                            });
+                          }}
+                        >
+                          Delete forever
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {trash.assets.map((item) => (
@@ -723,17 +761,32 @@ export default function ProjectDetailPage() {
                           {item.type}
                         </span>
                       </div>
-                      <button
-                        className="text-xs text-accent hover:underline shrink-0"
-                        onClick={async () => {
-                          await restoreAsset(item.id);
-                          mutateTrash();
-                          mutateAssets();
-                          mutateSubfolders();
-                        }}
-                      >
-                        Restore
-                      </button>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button
+                          className="text-xs text-accent hover:underline"
+                          onClick={async () => {
+                            await restoreAsset(item.id);
+                            mutateTrash();
+                            mutateAssets();
+                            mutateSubfolders();
+                          }}
+                        >
+                          Restore
+                        </button>
+                        <button
+                          className="text-xs text-status-error hover:underline"
+                          onClick={() => {
+                            setPurgeError(null);
+                            setPendingPurge({
+                              kind: "asset",
+                              id: item.id,
+                              name: item.name,
+                            });
+                          }}
+                        >
+                          Delete forever
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1324,6 +1377,48 @@ export default function ProjectDetailPage() {
             if (selectedAsset?.id === assetToDelete.id) setSelectedAsset(null);
           } catch {}
           setAssetToDelete(null);
+        }}
+      />
+
+      {/* Permanent delete from the trash (one item, or everything) */}
+      <ConfirmDialog
+        open={pendingPurge !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingPurge(null);
+        }}
+        title={
+          !pendingPurge || pendingPurge.kind === "all"
+            ? "Empty trash?"
+            : `Delete "${pendingPurge.name}" forever?`
+        }
+        description={
+          pendingPurge?.kind === "all"
+            ? "Everything in Recently Deleted will be permanently deleted, including its files in storage, comments and share links. This cannot be undone."
+            : pendingPurge?.kind === "folder"
+              ? "This folder and everything inside it will be permanently deleted, including files in storage, comments and share links. This cannot be undone."
+              : "This asset will be permanently deleted, including all its versions, files in storage, comments and share links. This cannot be undone."
+        }
+        confirmLabel={pendingPurge?.kind === "all" ? "Empty trash" : "Delete forever"}
+        variant="danger"
+        error={purgeError}
+        onConfirm={async () => {
+          if (!pendingPurge) return;
+          setPurgeError(null);
+          try {
+            if (pendingPurge.kind === "all") await emptyTrash();
+            else if (pendingPurge.kind === "folder")
+              await deleteFolderForever(pendingPurge.id);
+            else await deleteAssetForever(pendingPurge.id);
+          } catch (err) {
+            setPurgeError(
+              err instanceof Error ? err.message : "Could not delete. Try again.",
+            );
+            throw err;
+          } finally {
+            // Refresh either way: a partial failure may still have changed the trash.
+            mutateTrash();
+          }
+          setPendingPurge(null);
         }}
       />
     </div>

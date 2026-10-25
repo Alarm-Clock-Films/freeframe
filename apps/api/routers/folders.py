@@ -2,8 +2,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -21,6 +23,12 @@ from ..schemas.folder import (
     FolderUpdate,
 )
 from ..services.permissions import require_project_role, require_project_visible
+from ..tasks.cleanup_tasks import (
+    _PURGE_ADVISORY_LOCK_KEY,
+    PurgeCounts,
+    _purge_asset,
+    _purge_folder,
+)
 
 router = APIRouter(tags=["folders"])
 
@@ -580,3 +588,130 @@ def restore_folder(
 
     db.commit()
     return {"ok": True}
+
+
+# ─── Permanent delete (from the trash) ──────────────────────────────────────
+#
+# Without these the only way out of the trash was the retention GC
+# (`cleanup_soft_deleted`, after SOFT_DELETE_RETENTION_DAYS). They reuse the
+# GC's own cascades, so a hand-purged item leaves exactly what an aged-out one
+# does: no rows, and its S3 objects reclaimed. Only items already in the trash
+# can be purged; a live item has to be deleted first.
+
+
+def _take_purge_lock(db: Session) -> None:
+    """Share the retention GC's advisory lock so the two cascades never overlap.
+
+    Two cascades over the same subtree would each lock rows the other needs. The
+    GC holds this lock for a few seconds a day; telling the user to retry beats
+    a deadlock error.
+    """
+    got_lock = db.execute(
+        text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _PURGE_ADVISORY_LOCK_KEY}
+    ).scalar()
+    if not got_lock:
+        raise HTTPException(
+            status_code=409,
+            detail="A cleanup is already running. Try again in a moment.",
+        )
+
+
+def _lock_trashed(db: Session, model, obj_id):
+    """Re-fetch a row under FOR UPDATE, still in the trash, or None.
+
+    A restore that commits first makes this None, so it is never purged; one
+    that arrives after blocks until the purge commits and then finds nothing.
+    """
+    return (
+        db.query(model)
+        .filter(model.id == obj_id, model.deleted_at.isnot(None))
+        .with_for_update()
+        .first()
+    )
+
+
+def _purge_result(counts: PurgeCounts) -> dict:
+    result = asdict(counts)
+    result.pop("retention_days", None)
+    result.pop("share_links_expired", None)
+    return {"ok": True, **result}
+
+
+@router.delete("/assets/{asset_id}/permanent", response_model=dict)
+def permanently_delete_asset(
+    asset_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete an asset that is in the trash, with its files in storage."""
+    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.deleted_at.isnot(None)).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Deleted asset not found")
+    require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
+
+    _take_purge_lock(db)
+    if _lock_trashed(db, Asset, asset_id) is None:
+        raise HTTPException(status_code=404, detail="Deleted asset not found")
+
+    counts = PurgeCounts()
+    _purge_asset(db, asset_id, counts)
+    db.commit()
+    return _purge_result(counts)
+
+
+@router.delete("/folders/{folder_id}/permanent", response_model=dict)
+def permanently_delete_folder(
+    folder_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete a folder in the trash, everything inside it, and their files."""
+    folder = db.query(Folder).filter(Folder.id == folder_id, Folder.deleted_at.isnot(None)).first()
+    if not folder:
+        raise HTTPException(status_code=404, detail="Deleted folder not found")
+    require_project_role(db, folder.project_id, current_user, ProjectRole.editor)
+
+    _take_purge_lock(db)
+    if _lock_trashed(db, Folder, folder_id) is None:
+        raise HTTPException(status_code=404, detail="Deleted folder not found")
+
+    counts = PurgeCounts()
+    _purge_folder(db, folder_id, counts)
+    db.commit()
+    return _purge_result(counts)
+
+
+@router.delete("/projects/{project_id}/trash", response_model=dict)
+def empty_trash(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently delete everything in a project's trash."""
+    require_project_role(db, project_id, current_user, ProjectRole.editor)
+    _take_purge_lock(db)
+
+    counts = PurgeCounts()
+    folder_ids = [
+        r.id for r in db.query(Folder.id).filter(
+            Folder.project_id == project_id, Folder.deleted_at.isnot(None)
+        ).all()
+    ]
+    for fid in folder_ids:
+        # An earlier folder's cascade may already have taken this one.
+        if _lock_trashed(db, Folder, fid) is None:
+            continue
+        _purge_folder(db, fid, counts)
+
+    asset_ids = [
+        r.id for r in db.query(Asset.id).filter(
+            Asset.project_id == project_id, Asset.deleted_at.isnot(None)
+        ).all()
+    ]
+    for aid in asset_ids:
+        if _lock_trashed(db, Asset, aid) is None:
+            continue
+        _purge_asset(db, aid, counts)
+
+    db.commit()
+    return _purge_result(counts)
