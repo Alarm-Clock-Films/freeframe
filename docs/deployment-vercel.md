@@ -226,7 +226,11 @@ privacy details and plan limits.
   deployments for every other branch (`git.deploymentEnabled`), because a
   preview would otherwise share production's database, or, with the
   variables set for Production only, fail its build. If production moves to
-  another branch (such as `stable`), list that branch there instead.
+  another branch (such as `stable`), list that branch there instead. The
+  rule only applies to branches that carry this `vercel.json`: a branch
+  without it (such as an orphan branch holding PR screenshots) is built and
+  fails with `MISSING_SERVICES`. Give such a branch a `vercel.json` of its
+  own with `{"git": {"deploymentEnabled": false}}`.
 - **To turn previews back on**, give them their own database (Neon branching
   per preview), Redis and `JWT_SECRET` for the Preview environment, set
   `FREEFRAME_MIGRATE_ON_BUILD=1` there so each branch database is migrated,
