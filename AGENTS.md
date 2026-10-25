@@ -64,7 +64,8 @@ freeframe/
 │   │   ├── routers/        # API route handlers
 │   │   ├── services/       # business logic (auth, s3, permissions, …)
 │   │   ├── tasks/          # Celery tasks (transcode, email, watermark, reminders,
-│   │   │                   #   cleanup — the only code that hard-deletes)
+│   │   │                   #   cleanup — owns the hard-delete cascades; the trash's
+│   │   │                   #   "Delete forever" endpoints in routers/folders.py reuse them)
 │   │   ├── middleware/     # auth deps, share-link auth, rate limiting, setup guard
 │   │   ├── alembic/        # database migrations
 │   │   └── tests/          # pytest suite (mock-DB based — see Gotchas)
