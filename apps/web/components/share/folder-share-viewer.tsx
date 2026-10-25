@@ -28,6 +28,7 @@ import { fetchDownloadUrl, fetchShareDownloadOptions, handleDownload, triggerDow
 import { DownloadMenu } from '@/components/shared/download-menu'
 import { CommentCountBadge } from '@/components/shared/comment-count-badge'
 import { ShareReviewScreen } from './share-review-screen'
+import { ShareBrandMark } from './share-brand-mark'
 import { usePageTitle } from '@/hooks/use-page-title'
 import { SHARE_ASSETS_PAGE_SIZE } from '@/lib/share-page'
 import { Avatar } from '@/components/shared/avatar'
@@ -37,6 +38,7 @@ import type {
   FolderShareAssetsResponse,
   FolderShareAssetItem,
   FolderShareSubfolder,
+  ShareBranding,
 } from '@/types'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -63,12 +65,8 @@ interface FolderShareViewerProps {
   allowDownload: boolean
   showVersions: boolean
   appearance: ShareLinkAppearance
-  branding: {
-    logo_url?: string
-    primary_color?: string
-    custom_title?: string
-    custom_footer?: string
-  } | null
+  /** The project's, sent for every link type: header logo, accent and footer. */
+  branding: ShareBranding | null
   onAssetClick?: (assetId: string) => void
 }
 
@@ -573,6 +571,8 @@ interface AssetViewerProps {
   permission: SharePermission
   allowDownload: boolean
   showVersions: boolean
+  theme: 'dark' | 'light'
+  projectLogoUrl: string | null
   onBack: () => void
 }
 
@@ -606,7 +606,7 @@ function HlsVideo({ src, className }: { src: string; className?: string }) {
   return <video ref={videoRef} controls className={className} />
 }
 
-function AssetViewer({ token, shareSession, asset, permission, allowDownload, showVersions, onBack }: AssetViewerProps) {
+function AssetViewer({ token, shareSession, asset, permission, allowDownload, showVersions, theme, projectLogoUrl, onBack }: AssetViewerProps) {
   // Use the same ReviewProvider as the project review page, but with shareToken
   // This gives us the same video player, image viewer, comment panel, etc.
   return (
@@ -619,6 +619,8 @@ function AssetViewer({ token, shareSession, asset, permission, allowDownload, sh
         permission={permission}
         allowDownload={allowDownload}
         showVersions={showVersions}
+        theme={theme}
+        projectLogoUrl={projectLogoUrl}
         onBack={onBack}
       />
     </div>
@@ -836,6 +838,8 @@ export function FolderShareViewer({
         permission={permission}
         allowDownload={allowDownload}
         showVersions={showVersions}
+        theme={isDark ? 'dark' : 'light'}
+        projectLogoUrl={branding?.logo_url ?? null}
         onBack={() => setViewingAsset(null)}
       />
     )
@@ -901,20 +905,9 @@ export function FolderShareViewer({
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
-          ) : branding?.logo_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={branding.logo_url}
-              alt=""
-              className="h-7 w-7 rounded-full object-cover shrink-0"
-            />
           ) : (
-            <div
-              className="flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold text-text-primary shrink-0"
-              style={{ backgroundColor: accentColor }}
-            >
-              {(branding?.custom_title ?? folderName ?? 'FF').substring(0, 2).toUpperCase()}
-            </div>
+            // The same mark the asset view shows once one is opened (#308).
+            <ShareBrandMark theme={isDark ? 'dark' : 'light'} projectLogoUrl={branding?.logo_url} />
           )}
 
           {/* Breadcrumb */}

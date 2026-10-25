@@ -40,6 +40,10 @@ interface ReviewContextValue {
   refetchVersions: () => Promise<void>;
   pauseVideo: () => void;
   registerPauseHandler: (handler: () => void) => void;
+  /** The video player's own play/pause toggle, retry and all. No-op without a video player. */
+  togglePlayback: () => void;
+  /** Returns the unregister, which clears the handler only if it is still this one. */
+  registerTogglePlayHandler: (handler: () => void) => () => void;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -52,6 +56,8 @@ interface ReviewProviderProps {
   assetId: string;
   shareToken?: string; // If set, uses share token API instead of authenticated API
   shareSession?: string | null;
+  /** Version to open on instead of the newest, if it is ready. Read on mount only. */
+  initialVersionId?: string | null;
   children: React.ReactNode;
 }
 
@@ -59,6 +65,7 @@ export function ReviewProvider({
   assetId,
   shareToken,
   shareSession,
+  initialVersionId,
   children,
 }: ReviewProviderProps) {
   const [asset, setAsset] = useState<AssetResponse | null>(null);
@@ -67,6 +74,7 @@ export function ReviewProvider({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const pauseHandlerRef = useRef<(() => void) | null>(null);
+  const togglePlayHandlerRef = useRef<(() => void) | null>(null);
 
   const { setCurrentAsset, setCurrentVersion, setPlayheadTime, currentVersion } =
     useReviewStore();
@@ -79,6 +87,9 @@ export function ReviewProvider({
   // Guards against a stale comments fetch (e.g. an in-flight all-versions request)
   // overwriting a newer version-scoped one — only the latest request applies its result.
   const commentsReqRef = useRef(0);
+  // A compare link names its right pane, which is the current version (#299).
+  // Held from mount so a later URL change does not refetch the asset.
+  const initialVersionRef = useRef(initialVersionId ?? null);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -155,9 +166,11 @@ export function ReviewProvider({
         if (!mountedRef.current) return;
         setVersions(allVersions ?? []);
 
-        const readyVersion = (allVersions ?? [])
+        const ready = (allVersions ?? [])
           .sort((a, b) => b.version_number - a.version_number)
-          .find((v) => v.processing_status === "ready");
+          .filter((v) => v.processing_status === "ready");
+        const readyVersion =
+          ready.find((v) => v.id === initialVersionRef.current) ?? ready[0];
         if (readyVersion) {
           setCurrentVersion(readyVersion);
         } else if (data.latest_version) {
@@ -386,6 +399,21 @@ export function ReviewProvider({
     pauseHandlerRef.current = handler;
   }, []);
 
+  const togglePlayback = useCallback(() => {
+    togglePlayHandlerRef.current?.();
+  }, []);
+
+  // Cleared on unregister, unlike the pause handler: the mobile sheet's
+  // transport calls this for whatever player is mounted, and a video player
+  // replaced by an audio one must not leave its toggle behind. Only its own,
+  // though, so a late unregister never clears a newer player's toggle.
+  const registerTogglePlayHandler = useCallback((handler: () => void) => {
+    togglePlayHandlerRef.current = handler;
+    return () => {
+      if (togglePlayHandlerRef.current === handler) togglePlayHandlerRef.current = null;
+    };
+  }, []);
+
   const value = useMemo<ReviewContextValue>(
     () => ({
       assetId,
@@ -403,6 +431,8 @@ export function ReviewProvider({
       refetchVersions,
       pauseVideo,
       registerPauseHandler,
+      togglePlayback,
+      registerTogglePlayHandler,
     }),
     [
       assetId,
@@ -418,6 +448,8 @@ export function ReviewProvider({
       refetchVersions,
       pauseVideo,
       registerPauseHandler,
+      togglePlayback,
+      registerTogglePlayHandler,
     ],
   );
 

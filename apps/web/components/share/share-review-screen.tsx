@@ -21,6 +21,7 @@ import { formatTimecode } from '@/lib/utils'
 import type { SharePermission } from '@/types'
 import { fetchShareDownloadOptions, handleDownload } from './share-download'
 import { DownloadMenu } from '@/components/shared/download-menu'
+import { ShareBrandMark } from './share-brand-mark'
 
 /** Signed in, or a guest who has already given a name and email. */
 function hasIdentity(): boolean {
@@ -32,9 +33,14 @@ function hasIdentity(): boolean {
 }
 
 export function ShareReviewScreen({
-  token, shareSession, assetId, assetName, permission, allowDownload, showVersions, onBack,
+  token, shareSession, assetId, assetName, permission, allowDownload, showVersions, theme = 'dark', projectLogoUrl, onBack,
 }: {
-  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; allowDownload: boolean; showVersions: boolean; onBack?: () => void
+  token: string; shareSession?: string | null; assetId: string; assetName: string; permission: SharePermission; allowDownload: boolean; showVersions: boolean
+  /** The link's theme, which the page renders in; picks the logo variant. Dark, the share pages' default, when not given. */
+  theme?: 'dark' | 'light'
+  /** The project's logo from the link's branding, shown ahead of the instance's. */
+  projectLogoUrl?: string | null
+  onBack?: () => void
 }) {
   const [ReviewProvider, setProvider] = React.useState<any>(null)
   const [VideoPlayer, setVideoPlayer] = React.useState<any>(null)
@@ -80,6 +86,8 @@ export function ShareReviewScreen({
         permission={permission}
         allowDownload={allowDownload}
         showVersions={showVersions}
+        theme={theme}
+        projectLogoUrl={projectLogoUrl}
         onBack={onBack}
         VideoPlayer={VideoPlayer}
         ImageViewer={ImageViewer}
@@ -93,10 +101,10 @@ export function ShareReviewScreen({
 }
 
 function ShareReviewInner({
-  token, shareSession, assetName, permission, allowDownload, showVersions, onBack,
+  token, shareSession, assetName, permission, allowDownload, showVersions, theme, projectLogoUrl, onBack,
   VideoPlayer, ImageViewer, AudioPlayer, CommentPanel, CommentInput, VersionSwitcher,
 }: any) {
-  const { asset, versions, isLoading, comments, refetchComments, addComment } = useReview()
+  const { asset, versions, isLoading, comments, refetchComments, addComment, togglePlayback } = useReview()
   const { currentVersion, isDrawingMode, focusedCommentId, playheadTime } = useReviewStore()
   // An asset opens on its comments: that pane is the reason an asset link
   // exists. The folder grid is the surface that starts closed. Below `md` the
@@ -115,7 +123,7 @@ function ShareReviewInner({
   // One expression for the top-bar toggle's icon and its label, so the two
   // cannot disagree about whether the panel is up.
   const panelShown = useSheet ? sheetState !== 'peek' : sidebarOpen
-  const { isPlaying, togglePlay } = useMediaTransport()
+  const { isPlaying, togglePlay, mediaRootRef } = useMediaTransport({ toggleVideo: togglePlayback })
   const reviewRootRef = React.useRef<HTMLDivElement>(null)
   const handleSheetHeight = React.useCallback((px: number) => setSheetHeight(px), [])
 
@@ -286,7 +294,7 @@ function ShareReviewInner({
     <div className="flex flex-col h-dvh bg-bg-primary text-text-primary pl-safe pr-safe">
       {/* Top bar — same style as project review */}
       <div className="flex items-center justify-between border-b border-border px-3 h-12 bg-bg-secondary shrink-0">
-        <div className="flex items-center gap-1 min-w-0 flex-1">
+        <div className="flex items-center gap-1 sm:gap-2 min-w-0 flex-1">
           {/* A single-asset link has no grid to go back to, so there is nothing
               for this to do there. */}
           {onBack && (
@@ -294,7 +302,10 @@ function ShareReviewInner({
               <ArrowLeft className="h-4 w-4" />
             </button>
           )}
-          <span className="text-[13px] font-medium text-text-primary truncate">{assetName}</span>
+          <ShareBrandMark theme={theme} projectLogoUrl={projectLogoUrl} />
+          {/* The name gives way last: the logo shrinks first (ShareBrandMark),
+              and Download is icon-only on a phone. */}
+          <span className="text-[13px] font-medium text-text-primary truncate min-w-[4rem]">{assetName}</span>
         </div>
         <div className="flex items-center gap-2">
           {showVersions && VersionSwitcher && versions.length > 0 && (
@@ -305,8 +316,8 @@ function ShareReviewInner({
               load={() => fetchShareDownloadOptions(token, asset.id, shareSession)}
               onPick={(rendition) => handleDownload(token, asset.id, shareSession, rendition)}
             >
-              <button className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium text-accent-fg-inverse bg-accent hover:bg-accent-hover transition-colors">
-                <Download className="h-3 w-3" /> Download
+              <button aria-label="Download" className="flex items-center gap-1.5 h-7 px-2 sm:px-3 rounded-md text-xs font-medium text-accent-fg-inverse bg-accent hover:bg-accent-hover transition-colors">
+                <Download className="h-3 w-3" /> <span className="hidden sm:inline">Download</span>
                 <ChevronDown className="h-3 w-3 opacity-70" />
               </button>
             </DownloadMenu>
@@ -326,6 +337,7 @@ function ShareReviewInner({
       >
         {/* Media viewer — reuses project components */}
         <div
+          ref={mediaRootRef}
           className="flex-1 flex flex-col bg-bg-primary overflow-hidden min-w-0"
         >
           {asset.asset_type === 'video' && versionReady && VideoPlayer ? (

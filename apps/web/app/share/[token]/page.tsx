@@ -20,7 +20,7 @@ import { PoweredByBadge } from '@/components/shared/powered-by-badge'
 import { ThemedDefaultLogo } from '@/components/shared/themed-default-logo'
 import { cn } from '@/lib/utils'
 
-import type { Asset, SharePermission, ProjectBranding, ShareLinkAppearance } from '@/types'
+import type { Asset, SharePermission, ShareBranding, ShareLinkAppearance } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,8 @@ interface ShareValidateResponse {
   viewer_email?: string | null
   viewer_avatar_url?: string | null
   viewer_avatar_color?: string | null
-  branding?: ProjectBranding | null
+  /** The project's branding, for every link type. */
+  branding?: ShareBranding | null
   error?: string
 }
 
@@ -276,7 +277,7 @@ export default function SharePage({
         allowDownload: boolean
         showVersions: boolean
         appearance: ShareLinkAppearance | null
-        branding: ProjectBranding | null
+        branding: ShareBranding | null
       }
     | {
         stage: 'folder_ready'
@@ -291,7 +292,7 @@ export default function SharePage({
         allowDownload: boolean
         showVersions: boolean
         appearance: ShareLinkAppearance
-        branding: any
+        branding: ShareBranding | null
       }
 
   const [state, setState] = React.useState<PageState>({ stage: 'loading' })
@@ -485,6 +486,9 @@ export default function SharePage({
  * shared on its own or inside a folder (#117, #123). This is a thin wrapper:
  * it resolves the link's appearance, which the grid does for the folder path,
  * and then defers entirely.
+ *
+ * The project's logo and colour apply here as on the grid. Its footer text does
+ * not: the review screen is all player and comments, with no footer region.
  */
 function SingleAssetShareViewer({
   token, asset, permission, allowDownload, showVersions, appearance, branding, shareSession,
@@ -495,14 +499,15 @@ function SingleAssetShareViewer({
   allowDownload: boolean
   showVersions: boolean
   appearance?: ShareLinkAppearance | null
-  branding?: { primary_color?: string | null } | null
+  branding?: ShareBranding | null
   shareSession?: string | null
 }) {
   // Same resolution the folder grid uses: the link's own accent wins over the
   // project's, which wins over the built-in. No fallback, so a link with no
   // accent keeps the stylesheet's rather than being repainted.
   const accentColor = appearance?.accent_color ?? branding?.primary_color
-  useShareAppearance(accentColor, appearance?.theme !== 'light')
+  const isDark = appearance?.theme !== 'light'
+  useShareAppearance(accentColor, isDark)
 
   return (
     <div className="fixed inset-0 z-50">
@@ -514,6 +519,8 @@ function SingleAssetShareViewer({
         permission={permission}
         allowDownload={allowDownload}
         showVersions={showVersions}
+        theme={isDark ? 'dark' : 'light'}
+        projectLogoUrl={branding?.logo_url ?? null}
       />
     </div>
   )

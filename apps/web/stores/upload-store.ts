@@ -363,14 +363,14 @@ function activeElsewhere(
   row: UploadFile,
   info: ResumeInfo,
   now: number,
-  attempt?: AbortController,
   click?: ResumeClick,
 ): boolean {
-  // `attempt` is the caller's own controller, where the caller is the one
-  // trying to start a transfer: `resumeUpload` registers it before it asks the
-  // server anything, so without excluding it here every resume would count as
-  // this tab already sending and the guard would never refuse.
-  if (isSendingHere(row.id, attempt)) return false
+  // Whether this tab holds a controller for the row is not asked. A resume
+  // asking holds the row's only run (`runners`), so the controller there is
+  // its own; and a resume cancelled while its `/parts` was out keeps its
+  // controller until the answer comes, sending nothing. Counted as this tab
+  // sending, that let a Discard abort another device's live transfer. A
+  // transfer this tab really runs stamps the row, which `ownAndRecentAt` reads.
   // Another tab of this browser is stamping it. The server's
   // `last_activity_at` cannot say so: it records that bytes moved, and a tab
   // that has just taken the upload up has not moved any yet. Read before the
@@ -1541,16 +1541,50 @@ function isFinalRefusal(err: unknown): boolean {
 
 const ASSET_GONE_MESSAGE = 'This file is no longer available.'
 
+/** The most assets `GET /assets/batch` answers for in one request. */
+const ASSET_BATCH_SIZE = 100
+
 /**
- * An answer to `GET /assets/{id}` that will not change.
+ * What the server says about each asset the poll watches, by asset id: the
+ * asset, `'gone'` (final), or `null` (no answer, ask again).
  *
- * An asset in the trash answers 404, and one in a deleted project answers 403
- * (since v1.19.0). Both say the file is not there for this user, which no amount
- * of asking again alters, so the row is finished. Anything else -- a dropped
- * connection, a 5xx -- says nothing about the asset and is simply asked again.
+ * One `GET /assets/batch` per hundred assets, each asked about once however
+ * many rows watch it. It used to be one `GET /assets/{id}` per row, which at
+ * the 5s cadence is 12 reads a minute per row, and about fifty rows left
+ * processing spent the whole per-user read limit on the poll alone (#524).
+ *
+ * The batch leaves out what `GET /assets/{id}` would answer 403 or 404 for: an
+ * asset in the trash, or in a deleted project (since v1.19.0). Both say the file
+ * is not there for this user, which no amount of asking again alters, so an id
+ * missing from a successful answer is gone and its row is finished. A request
+ * that fails -- a dropped connection, a 5xx, or any other status -- says nothing
+ * about any asset in it, so they are all asked about again. Asked as `ownerId`,
+ * the owner of every watched row: sent as an account that signed in since, the
+ * answer would leave the owner's assets out and fail the owner's rows for good.
  */
-function isAssetGone(err: unknown): boolean {
-  return err instanceof ApiError && (err.status === 403 || err.status === 404)
+async function askAboutAssets(
+  ownerId: string | undefined,
+  watched: UploadFile[],
+): Promise<Map<string, AssetResponse | 'gone' | null>> {
+  const ids = Array.from(new Set(watched.flatMap((f) => (f.assetId ? [f.assetId] : []))))
+  const answers = new Map<string, AssetResponse | 'gone' | null>()
+  const requests: Promise<void>[] = []
+  for (let i = 0; i < ids.length; i += ASSET_BATCH_SIZE) {
+    const chunk = ids.slice(i, i + ASSET_BATCH_SIZE)
+    const query = new URLSearchParams(chunk.map((id) => ['ids', id]))
+    requests.push(
+      api.get<AssetResponse[]>(`/assets/batch?${query}`, { pinSubject: ownerId })
+        .then((assets) => {
+          const found = new Map(assets.map((a) => [a.id, a]))
+          for (const id of chunk) answers.set(id, found.get(id) ?? 'gone')
+        })
+        .catch(() => {
+          for (const id of chunk) answers.set(id, null)
+        }),
+    )
+  }
+  await Promise.all(requests)
+  return answers
 }
 
 // AbortControllers for cancellation
@@ -1563,10 +1597,13 @@ const abortControllers: Record<string, AbortController> = {}
  * a `finally`, so the entry exists for exactly as long as the transfer does --
  * unlike `ownerTab`, which a row keeps carrying after the transfer behind it
  * has died, and across a reload that killed it.
+ *
+ * A controller can outlive the sending, though: a run stood down while its
+ * `/parts` is out keeps its controller until the answer comes while sending
+ * nothing, which is why `activeElsewhere` no longer consults it.
  */
-function isSendingHere(fileId: string, except?: AbortController): boolean {
-  const running = abortControllers[fileId]
-  return running !== undefined && running !== except
+function isSendingHere(fileId: string): boolean {
+  return abortControllers[fileId] !== undefined
 }
 
 /** Claims a row for this tab and keeps stamping it until the returned stop is
@@ -1620,6 +1657,27 @@ function transferWatch(
   }
 }
 
+/** One file of a drop or pick handed to `startUploads`. */
+export interface StartItem {
+  file: File
+  assetName: string
+  /** The folder this file goes to, when it is not the drop's. */
+  folderId?: string | null
+  /** The type to send, when not `file.type`. */
+  mimeType?: string
+}
+
+/** A line the Uploads panel shows about a drop or a pick. */
+export interface DropNote {
+  id: string
+  text: string
+  /** The account that made the drop; only it sees the note. */
+  ownerId: string | null
+}
+
+/** How many notes the panel keeps; the oldest go first. */
+const MAX_DROP_NOTES = 5
+
 export interface UploadStore {
   files: UploadFile[]
   /**
@@ -1646,6 +1704,13 @@ export interface UploadStore {
    */
   runsRevision: number
   panelOpen: boolean
+  /**
+   * What the Uploads panel says about drops and picks beyond their rows: files
+   * left out, files that could not be read, folders that could not be made.
+   * Each line is shown until dismissed, and only to the account that made the
+   * drop. Never saved: a note is about something that just happened here.
+   */
+  dropNotes: DropNote[]
   historyLoaded: boolean
   historyHasMore: boolean
   historyLoading: boolean
@@ -1664,8 +1729,17 @@ export interface UploadStore {
   /**
    * Adds a whole drop or pick, in order, as one drop. Returns the row ids in
    * the order given, or none at all when nobody is signed in.
+   *
+   * `folderId` is where the files go; a file of a dropped folder names its own
+   * folder instead (`null` for the project root). `mimeType` is the type the
+   * file is sent as when the browser's own will not do (see `planDrop`).
    */
-  startUploads: (items: Array<{ file: File; assetName: string }>, projectId: string, projectName?: string, folderId?: string | null) => string[]
+  startUploads: (items: StartItem[], projectId: string, projectName?: string, folderId?: string | null) => string[]
+  /** Adds a line to the top of the Uploads panel, and opens the panel to show
+   *  it. It is shown only to `ownerId`, the account that made the drop, which
+   *  defaults to the one signed in now. */
+  addDropNote: (text: string, ownerId?: string | null) => void
+  dismissDropNote: (id: string) => void
   /** Queues an interrupted row to carry on with `file`, ahead of every file not yet started. */
   resumeUpload: (fileId: string, file: File) => void
   /** Resolves to a message saying why nothing was discarded, or null. */
@@ -1692,10 +1766,10 @@ export interface UploadStore {
   clearCompleted: () => void
   fetchHistory: () => Promise<void>
   fetchMoreHistory: () => Promise<void>
-  // SSE-driven processing updates
-  updateProcessingProgress: (assetId: string, percent: number) => void
-  markProcessingComplete: (assetId: string) => void
-  markProcessingFailed: (assetId: string, error: string) => void
+  // SSE-driven processing updates, applied to the row of the version they name
+  updateProcessingProgress: (assetId: string, percent: number, versionId?: string) => void
+  markProcessingComplete: (assetId: string, versionId?: string) => void
+  markProcessingFailed: (assetId: string, error: string, versionId?: string) => void
   // Fallback poll: re-check processing items from backend (catches missed SSE events)
   refreshProcessingItems: () => Promise<void>
 }
@@ -1719,6 +1793,20 @@ function mapProcessingStatus(status: string): UploadStatus {
     case 'failed': return 'failed'
     default: return 'complete'
   }
+}
+
+/**
+ * Whether a transcode event for this asset and version is about this row.
+ *
+ * Keyed on the version, not the asset alone: an asset can have two rows in
+ * `processing` at once (v1 still transcoding, v2 uploaded on top of it), and
+ * v1's `transcode_complete` used to flip both to Ready -- after which v2 was no
+ * longer polled, so nothing corrected it. An event without a version id, from a
+ * worker that predates it, or a row without one still matches by asset.
+ */
+function isProcessingRowOf(f: UploadFile, assetId: string, versionId: string | undefined): boolean {
+  return f.assetId === assetId && f.status === 'processing'
+    && (!versionId || !f.versionId || f.versionId === versionId)
 }
 
 /**
@@ -1776,6 +1864,57 @@ async function finishAssembledUpload(versionId: string, ownerId: string | undefi
     return true
   } catch {
     return false
+  }
+}
+
+/** Waits before each resend of a completion that did not get through, unless the server asked for another. */
+const COMPLETE_RETRY_DELAYS_MS = [2_000, 5_000]
+/** The longest a completion waits on a server's Retry-After before trying again. */
+const COMPLETE_RETRY_AFTER_CAP_MS = 30_000
+
+/**
+ * Whether a completion failed in a way that sending it again may fix: the
+ * request never got an answer (fetch rejects with a TypeError), or the server
+ * or a proxy in front of it could not get through for now (502/503/504; the
+ * API answers 503 with a Retry-After when it cannot reach storage). A 4xx is
+ * the server's answer about this version, and asking again gets the same one.
+ * Cross-origin, an unhandled 500 with no CORS headers reaches the client as a
+ * fetch TypeError and is retried, which is safe because the completion is
+ * idempotent (#263).
+ */
+function isTransientCompletionFailure(err: unknown): boolean {
+  if (err instanceof ApiError) return err.status === 502 || err.status === 503 || err.status === 504
+  return err instanceof TypeError
+}
+
+/**
+ * Sends `/upload/complete`, and sends it again, up to three tries in all, while
+ * it fails in a way a retry may fix.
+ *
+ * Sent once, a completion lost to a blip at the end of a long transfer left the
+ * row `interrupted`, and Resume needed the file picked again just to repeat
+ * this one request. Repeating it is safe: the server answers a completion it
+ * already ran with the version's status rather than running it twice (#263).
+ *
+ * Stops early when the upload is cancelled. The last error is rethrown either
+ * way, for the caller's catch to ask the server what happened. A resend under
+ * another account is never made: the request is pinned, and throws instead.
+ */
+async function postCompletion(
+  body: Record<string, unknown>,
+  asOwner: { pinSubject: string | undefined },
+  signal: AbortSignal,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await api.post('/upload/complete', body, asOwner)
+      return
+    } catch (err) {
+      if (attempt >= COMPLETE_RETRY_DELAYS_MS.length || signal.aborted || !isTransientCompletionFailure(err)) throw err
+      const asked = err instanceof ApiError && err.retryAfter !== undefined ? err.retryAfter * 1000 : undefined
+      await delayUnlessAborted(Math.min(asked ?? COMPLETE_RETRY_DELAYS_MS[attempt], COMPLETE_RETRY_AFTER_CAP_MS), signal)
+      if (signal.aborted) throw err
+    }
   }
 }
 
@@ -2575,7 +2714,9 @@ async function runNew(id: string, runner: Runner, runKey: string): Promise<void>
           asset_name: sentName,
           original_filename: file.name,
           file_size_bytes: file.size,
-          mime_type: file.type,
+          // The type the drop planned: a file read out of a dropped folder
+          // has no browser type at all.
+          mime_type: startRow?.fileType || file.type,
           folder_id: target.folderId,
         }, asOwner)
         : await api.post<VersionInitiateResponse>(`/assets/${target.assetId}/versions`, {
@@ -2668,13 +2809,13 @@ async function runNew(id: string, runner: Runner, runKey: string): Promise<void>
 
     completionAttempted = true
     patchRow(id, { finalizing: true })
-    await api.post('/upload/complete', {
+    await postCompletion({
       s3_key,
       upload_id,
       asset_id,
       version_id,
       parts,
-    }, asOwner)
+    }, asOwner, controller.signal)
 
     // Upload done — backend now processes (transcode/convert).
     // For non-processable types (or if SSE isn't wired), mark complete directly.
@@ -2739,7 +2880,12 @@ async function runNew(id: string, runner: Runner, runKey: string): Promise<void>
     // API takes its client's whole retry budget to give up (minutes), during
     // which the queue stood still behind a row that already read "Cancelled"
     // (e2e S4, APP-BUG-5). `abortCancelled` handles its own answer.
-    if (userCancelled() && upload_id && s3_key && version_id) {
+    //
+    // The cancel is read off the run's own controller as well as the row:
+    // Remove on the cancelled row can take the row away before the request
+    // that was out at the cancel has wound down, and the cancel still stands
+    // (#523). Only `cancelUpload` aborts this controller.
+    if ((controller.signal.aborted || userCancelled()) && upload_id && s3_key && version_id) {
       void abortCancelled(useUploadStore.setState, { s3_key, upload_id, version_id }, owner)
     }
   } finally {
@@ -2837,7 +2983,7 @@ async function runResume(id: string, runner: Runner, runKey: string): Promise<vo
     const answeredAt = Date.now()
     const requestedAt = resumeRequestedAt.get(id)
     const click = requestedAt === undefined ? undefined : { requestedAt, askedAt, rtt: answeredAt - askedAt }
-    const elsewhere = activeElsewhere(row, info, answeredAt, controller, click)
+    const elsewhere = activeElsewhere(row, info, answeredAt, click)
     resumeRequestedAt.delete(id)
     if (elsewhere) {
       const refusedAt = info.last_activity_at
@@ -2969,7 +3115,7 @@ async function runResume(id: string, runner: Runner, runKey: string): Promise<vo
 
     completionAttempted = true
     updateFile({ finalizing: true })
-    await api.post('/upload/complete', {
+    await postCompletion({
       s3_key: info.s3_key,
       upload_id: info.upload_id,
       asset_id: info.asset_id,
@@ -2981,7 +3127,7 @@ async function runResume(id: string, runner: Runner, runKey: string): Promise<vo
       // no error on most backends; handing over none makes that backend
       // refuse instead, which is the failure worth having.
       parts: held.length > 0 ? [] : parts,
-    }, asOwner)
+    }, asOwner, controller.signal)
 
     const isMedia = /^(video|audio|image)\//.test(info.mime_type)
     updateFile({
@@ -3033,8 +3179,9 @@ async function runResume(id: string, runner: Runner, runKey: string): Promise<vo
       }
     }
 
-    // Sent, not awaited, as in `runNew`: the place is given back now.
-    if (userCancelled() && info) {
+    // Sent, not awaited, as in `runNew`: the place is given back now, and a
+    // row removed since the cancel is still aborted.
+    if ((controller.signal.aborted || userCancelled()) && info) {
       void abortCancelled(useUploadStore.setState, {
         s3_key: info.s3_key,
         upload_id: info.upload_id,
@@ -3064,7 +3211,7 @@ async function runResume(id: string, runner: Runner, runKey: string): Promise<vo
  */
 function enqueueNew(
   set: (fn: (s: UploadStore) => Partial<UploadStore>) => void,
-  items: Array<{ file: File; assetName: string; target: StartTarget }>,
+  items: Array<{ file: File; assetName: string; target: StartTarget; mimeType?: string }>,
   projectId: string,
   projectName: string | undefined,
 ): string[] {
@@ -3075,7 +3222,7 @@ function enqueueNew(
   noticeSubject()
   const dropSeq = ++dropSeqs
   const createdAt = Date.now()
-  const rows: UploadFile[] = items.map(({ file, assetName, target }) => {
+  const rows: UploadFile[] = items.map(({ file, assetName, target, mimeType }) => {
     const id = newRowId()
     fileRefs.set(id, file)
     startTargets.set(id, target)
@@ -3083,7 +3230,7 @@ function enqueueNew(
       id,
       fileName: file.name,
       fileSize: file.size,
-      fileType: file.type,
+      fileType: mimeType ?? file.type,
       projectId,
       projectName,
       assetName,
@@ -3114,6 +3261,7 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   versionsRevision: 0,
   runsRevision: 0,
   panelOpen: false,
+  dropNotes: [],
   historyLoaded: false,
   historyHasMore: true,
   historyLoading: false,
@@ -3128,10 +3276,25 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   startUploads: (items, projectId, projectName, folderId) =>
     enqueueNew(
       set,
-      items.map(({ file, assetName }) => ({ file, assetName, target: { kind: 'asset' as const, folderId: folderId ?? null } })),
+      items.map((item) => ({
+        file: item.file,
+        assetName: item.assetName,
+        mimeType: item.mimeType,
+        target: {
+          kind: 'asset' as const,
+          folderId: item.folderId !== undefined ? item.folderId : (folderId ?? null),
+        },
+      })),
       projectId,
       projectName,
     ),
+
+  addDropNote: (text, ownerId) => {
+    const note: DropNote = { id: newRowId(), text, ownerId: ownerId !== undefined ? ownerId : currentSubject() }
+    set((s) => ({ dropNotes: [...s.dropNotes, note].slice(-MAX_DROP_NOTES), panelOpen: true }))
+  },
+
+  dismissDropNote: (id) => set((s) => ({ dropNotes: s.dropNotes.filter((n) => n.id !== id) })),
 
   startVersionUpload: (file, assetId, assetName, projectId, projectName) =>
     enqueueNew(set, [{ file, assetName, target: { kind: 'version', assetId } }], projectId, projectName)[0] ?? null,
@@ -3348,12 +3511,39 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
   },
 
   cancelAllQueued: () => {
-    // Each row by its own rule. A held probe hands the hold down the line as
-    // it goes, and the last one out finds nobody waiting and ends it.
+    // Each row by `cancelUpload`'s rule for a row whose turn has not begun: a
+    // new file only leaves, a queued resume goes back to plain `interrupted`.
+    // Applied to all of them in one write rather than one `cancelUpload` each,
+    // which wrote and saved the whole list once per row: seconds of a frozen
+    // tab for a dropped folder of a few hundred files.
     const waiting = visibleFiles(get()).filter(
       (f) => (f.status === 'queued' || (f.status === 'interrupted' && f.queuedResume)) && !runners.has(f.id),
     )
-    for (const f of waiting) get().cancelUpload(f.id)
+    if (waiting.length === 0) return
+    const leaving = new Set<string>()
+    const unqueued = new Set<string>()
+    for (const f of waiting) {
+      fileRefs.delete(f.id)
+      if (f.status === 'queued') {
+        startTargets.delete(f.id)
+        leaving.add(f.id)
+      } else {
+        resumeRequestedAt.delete(f.id)
+        unqueued.add(f.id)
+      }
+    }
+    set((s) => ({
+      files: s.files.flatMap((f) => {
+        if (leaving.has(f.id)) return []
+        if (unqueued.has(f.id)) return [{ ...f, queuedResume: undefined, holdReason: undefined }]
+        return [f]
+      }),
+    }))
+    // Out of the queue together, and only then the hold: a probe among them
+    // passes the hold on once, finds nobody left waiting, and ends it.
+    const probe = queue.hold.probeId
+    for (const f of waiting) queue.remove(f.id)
+    if (probe !== null && (leaving.has(probe) || unqueued.has(probe)) && !runners.has(probe)) passOnProbe()
   },
 
   retryUpload: (fileId) => {
@@ -3514,30 +3704,30 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     }
   },
 
-  updateProcessingProgress: (assetId, percent) => {
+  updateProcessingProgress: (assetId, percent, versionId) => {
     set((s) => ({
       files: s.files.map((f) =>
-        f.assetId === assetId && f.status === 'processing'
+        isProcessingRowOf(f, assetId, versionId)
           ? { ...f, processingProgress: percent }
           : f,
       ),
     }))
   },
 
-  markProcessingComplete: (assetId) => {
+  markProcessingComplete: (assetId, versionId) => {
     set((s) => ({
       files: s.files.map((f) =>
-        f.assetId === assetId && f.status === 'processing'
+        isProcessingRowOf(f, assetId, versionId)
           ? { ...f, status: 'complete' as const, processingProgress: 100, completedAt: Date.now() }
           : f,
       ),
     }))
   },
 
-  markProcessingFailed: (assetId, error) => {
+  markProcessingFailed: (assetId, error, versionId) => {
     set((s) => ({
       files: s.files.map((f) =>
-        f.assetId === assetId && f.status === 'processing'
+        isProcessingRowOf(f, assetId, versionId)
           ? { ...f, status: 'failed' as const, error }
           : f,
       ),
@@ -3580,23 +3770,17 @@ const storeCreator: StateCreator<UploadStore, [['zustand/persist', unknown]]> = 
     if (!watched.length) return
     try {
       // `null` is "no answer, ask again"; `'gone'` is an answer that is final.
-      // Asked as the row's owner: sent as an account that signed in since, a
-      // 403 would read as the asset gone and fail the owner's row for good.
-      const results = await Promise.all(
-        watched.map((f) =>
-          api.get<AssetResponse>(`/assets/${f.assetId}`, { pinSubject: f.ownerId }).catch((err): 'gone' | null =>
-            isAssetGone(err) ? 'gone' : null,
-          ),
-        ),
-      )
+      // Every watched row is visible, so they all belong to the signed-in
+      // account and share one owner.
+      const answers = await askAboutAssets(watched[0].ownerId, watched)
+      const watchedIds = new Set(watched.map((f) => f.id))
       set((s) => ({
         files: s.files.map((f) => {
           if ((f.status !== 'processing' && f.status !== 'interrupted') || !f.assetId || f.queuedResume) return f
-          // Matched on the version and not the asset: two rows can watch one
-          // asset -- an interrupted v2 and a processing v3 -- and on the asset
-          // they both read the first one's answer.
-          const idx = watched.findIndex((pf) => pf.id === f.id)
-          const answer = idx >= 0 ? results[idx] : null
+          // Two rows can watch one asset -- an interrupted v2 and a processing
+          // v3 -- and both read its one answer. The version guard below is
+          // what keeps the answer about v3 from being applied to v2.
+          const answer = watchedIds.has(f.id) ? answers.get(f.assetId) ?? null : null
           // Failed is neither polled nor counted as active, so this is what
           // takes the row off the timer; the panel still offers Dismiss on it.
           if (answer === 'gone') {
@@ -3725,6 +3909,14 @@ const tombstones = new Set<string>()
  */
 const heldIds = new Set<string>()
 
+/**
+ * Each row as this tab last offered it to `mergeWithStored`, before the merge,
+ * as JSON. A row that reads the same now has not changed here since, so on a
+ * stamp tie storage keeps whatever another tab wrote in between. A row with no
+ * entry, the first write after a load say, is judged as unchanged.
+ */
+let lastOutgoing = new Map<string, string>()
+
 /** Lets a saved row go for good, from this tab's state and from storage. */
 function dropSavedRow(id: string): void {
   tombstones.add(id)
@@ -3847,8 +4039,11 @@ function runningHere(id: string): boolean {
  *  * A row this tab owns is written as this tab has it: nobody else is in a
  *    position to know better -- unless another tab has stamped it more
  *    recently, which means that tab took the upload up after this one stopped.
- *  * Any other row is kept as stored whenever the stored copy was stamped at
- *    least as recently. This tab has nothing newer to say about it.
+ *  * Any other row is kept as stored when the stored copy was stamped more
+ *    recently. On a tie -- which is every write of a row nobody stamps, such
+ *    as a history row -- it is kept as stored unless this tab has changed it
+ *    since its own last write (`lastOutgoing`); otherwise this tab has nothing
+ *    newer to say about it.
  */
 function mergeWithStored(name: string, outgoing: string): string {
   try {
@@ -3864,6 +4059,7 @@ function mergeWithStored(name: string, outgoing: string): string {
     const byId = new Map(ours.filter((f) => !tombstones.has(f.id)).map((f) => [f.id, f]))
     byId.forEach((_, id) => heldIds.add(id))
     const notTheSubjects = (f: UploadFile) => f.ownerId === undefined || f.ownerId !== subject
+    const sending = new Map(ours.map((f) => [f.id, JSON.stringify(f)]))
 
     for (const row of stored ?? []) {
       if (tombstones.has(row.id)) continue
@@ -3895,8 +4091,13 @@ function mergeWithStored(name: string, outgoing: string): string {
         if (takenUp) byId.set(row.id, row)
         continue
       }
-      if ((row.heartbeatAt ?? 0) >= (here.heartbeatAt ?? 0)) byId.set(row.id, row)
+      const storedBeat = row.heartbeatAt ?? 0
+      const ourBeat = here.heartbeatAt ?? 0
+      const sent = lastOutgoing.get(row.id)
+      const changedHere = sent !== undefined && sent !== sending.get(row.id)
+      if (storedBeat > ourBeat || (storedBeat === ourBeat && !changedHere)) byId.set(row.id, row)
     }
+    lastOutgoing = sending
 
     // Array.from rather than a spread: this repo's target does not allow
     // iterating a Map without downlevelIteration.
@@ -3981,6 +4182,11 @@ export const useUploadStore = create<UploadStore>()(
  * signing back in; views, counts and polls see only these. A row with no owner
  * is nobody's and shows to nobody, and with nobody signed in nothing shows.
  */
+/** The drop notes of the account signed in now, oldest first. */
+export function visibleDropNotes(state: Pick<UploadStore, 'dropNotes' | 'subject'>): DropNote[] {
+  return state.dropNotes.filter((n) => n.ownerId !== null && n.ownerId === state.subject)
+}
+
 export function visibleFiles(state: UploadStore): UploadFile[] {
   return state.files.filter((f) => f.ownerId !== undefined && f.ownerId === state.subject)
 }
@@ -4140,6 +4346,7 @@ export const __uploadQueueTesting = {
     tabProgressAt = -Infinity
     tombstones.clear()
     heldIds.clear()
+    lastOutgoing = new Map()
     adopting.clear()
     historyGeneration++
     claimSettleMs = CLAIM_SETTLE_MS
@@ -4163,6 +4370,11 @@ export const __uploadQueueTesting = {
   hasAbortController: (id: string): boolean => abortControllers[id] !== undefined,
   /** Rows whose run has begun and not yet ended. */
   runningIds: (): string[] => Array.from(runners.keys()),
+  /** The folder a queued new upload will be created in, as its initiate will name it. */
+  folderOf: (id: string): string | null | undefined => {
+    const target = startTargets.get(id)
+    return target?.kind === 'asset' ? target.folderId : undefined
+  },
   /** Whether a row of the signed-in account is moving, so that the lock is wanted. */
   wakeLockWanted: (): boolean => wakeLockWanted,
 }

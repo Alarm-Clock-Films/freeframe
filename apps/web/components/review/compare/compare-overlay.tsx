@@ -29,6 +29,8 @@ interface CompareOverlayProps {
   onClose(): void
   /** Mirror of the page's role gate — comment inputs render only when true. */
   canComment?: boolean
+  /** Mirror of the page's owner gate: offers Delete on other people's comments. */
+  canModerate?: boolean
 }
 
 function mediaOf(v: AssetVersion | null | undefined): { fps?: number | null; duration_seconds?: number | null } {
@@ -38,7 +40,7 @@ function mediaOf(v: AssetVersion | null | undefined): { fps?: number | null; dur
 }
 
 /** Fullscreen two-version compare. Chrome: select A, (image mode toggle), select B, close. */
-export function CompareOverlay({ asset, versions, rightVersion, onClose, canComment = true }: CompareOverlayProps) {
+export function CompareOverlay({ asset, versions, rightVersion, onClose, canComment = true, canModerate = false }: CompareOverlayProps) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -75,13 +77,19 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
     [versions],
   )
 
-  // Left = ?compare= param (fallback: nearest other ready version). Right = route's current version.
+  // Left = ?compare= param (fallback: nearest other ready version). Right = the
+  // store's current version; ?right= names it so a reload restores it (#299).
   const compareParam = searchParams.get('compare')
-  const fallbackLeft =
-    [...ready].reverse().find((v) => v.version_number < rightVersion.version_number) ??
-    ready.find((v) => v.id !== rightVersion.id) ?? null
-  const left = ready.find((v) => v.id === compareParam) ?? fallbackLeft
+  const leftFor = (r: AssetVersion) =>
+    ready.find((v) => v.id === compareParam) ??
+    [...ready].reverse().find((v) => v.version_number < r.version_number) ??
+    ready.find((v) => v.id !== r.id) ?? null
+  const left = leftFor(rightVersion)
   const right = rightVersion
+  // The ready version ?right= names, if any. ReviewProvider opens on it, but only
+  // when it mounts; see the restore effect below for an already-mounted page.
+  const rightParam = searchParams.get('right')
+  const urlRight = ready.find((v) => v.id === rightParam) ?? null
 
   const isVideo = asset.asset_type === 'video'
   const mode = (searchParams.get('mode') === 'sbs' ? 'sbs' : 'wipe') as 'wipe' | 'sbs'
@@ -91,21 +99,45 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
   // the two updates arriving together. A legacy URL has no `offFor`; its offsets
   // belong to the pair shown when the overlay opened, which is pinned in state.
   const pairKey = offsetPairKey(left?.id, right.id)
-  const [mountPair] = React.useState(pairKey)
+  // The pair the overlay opens on is the one the URL names, even while the store
+  // still shows another right version for the commit before the restore lands.
+  const [mountPair] = React.useState(() => {
+    const openRight = urlRight ?? right
+    return offsetPairKey(leftFor(openRight)?.id, openRight.id)
+  })
   const { offA, offB } = resolveOffsets(
     { offA: searchParams.get('offA'), offB: searchParams.get('offB'), offFor: searchParams.get('offFor') },
     pairKey,
     mountPair,
   )
 
+  // Every write names the right pane, so even a link opened without ?right=
+  // describes its pair once anything in compare is changed.
   const writeParams = React.useCallback(
     (mutate: (p: URLSearchParams) => void) => {
       const p = new URLSearchParams(searchParams.toString())
+      p.set('right', right.id)
       mutate(p)
       router.replace(`${pathname}?${p.toString()}`, { scroll: false })
     },
-    [router, pathname, searchParams],
+    [router, pathname, searchParams, right.id],
   )
+
+  // ReviewProvider reads ?right= only when it mounts, so a soft navigation to a
+  // compare URL on an already-open review page lands here with the store still
+  // on another version. Restore the named version once, on mount. If the URL
+  // names a version that is unknown or not ready, the store's version stays and
+  // one write names it instead, so the URL matches the pair on screen (#299).
+  // writeParams builds on this render's params, so the write keeps the rest of
+  // the URL as it is now and cannot bring back a param removed earlier.
+  const restoredRightRef = React.useRef(false)
+  React.useEffect(() => {
+    if (restoredRightRef.current) return
+    restoredRightRef.current = true
+    if (!rightParam) return
+    if (!urlRight) writeParams(() => {})
+    else if (urlRight.id !== right.id) setCurrentVersion(urlRight)
+  }, [rightParam, urlRight, right.id, writeParams, setCurrentVersion])
 
   // Streams
   const { url: urlA, error: errA } = useStreamUrl(asset.id, left?.id ?? null)
@@ -321,13 +353,14 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
   )
   const handleSwitchRight = React.useCallback(
     (v: AssetVersion) => {
-      // The right pane's version lives in the store, its offsets in the URL.
+      // The right pane's version renders from the store (the URL only names it
+      // for a reload), its offsets from the URL.
       // The store write is synchronous and router.replace commits later, and a
       // transition cannot batch the two, so for a commit or two the NEW version
       // renders next to the old URL offsets. Those offsets are tagged with the
       // pair they were calibrated for (offFor), so they no longer match the new
       // pair and resolve to 0 in that window; the write below then removes them.
-      writeParams((p) => { p.delete('offA'); p.delete('offB'); p.delete('offFor') })
+      writeParams((p) => { p.set('right', v.id); p.delete('offA'); p.delete('offB'); p.delete('offFor') })
       setCurrentVersion(v)
       setAnnotationB(null)
       if (lastAnnotationSide === 'b') {
@@ -419,6 +452,7 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
               <CommentPanel
                 comments={sideA.comments}
                 currentUserId={user?.id}
+                canModerate={canModerate}
                 onResolve={async (id) => { await sideA.resolveComment(id) }}
                 onDelete={async (id) => { await sideA.deleteComment(id) }}
                 onAddReaction={async (id, e) => { await sideA.addReaction(id, e) }}
@@ -587,7 +621,27 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                   />
                 }
               />
-            ) : null
+            ) : (
+              // A wipe needs both pictures. While either stream is loading or
+              // after one fails, fall back to side-by-side style panes: both
+              // badges, whichever picture did load, and which stream is
+              // unavailable, instead of an empty black stage.
+              <div data-testid="wipe-fallback" className="relative flex min-h-0 flex-1 items-stretch overflow-hidden bg-black">
+                <div className="relative flex min-w-0 flex-1 items-center justify-center">
+                  <span className="absolute left-3 top-3 z-10 rounded bg-sky-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeA}</span>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {urlA && <img src={urlA} alt={badgeA} className="max-h-full max-w-full object-contain" draggable={false} />}
+                  {errA && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeA}</span>}
+                </div>
+                <div className="w-px bg-border" />
+                <div className="relative flex min-w-0 flex-1 items-center justify-center">
+                  <span className="absolute right-3 top-3 z-10 rounded bg-emerald-500/90 px-1.5 py-0.5 text-[11px] font-semibold text-white">{badgeB}</span>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {urlB && <img src={urlB} alt={badgeB} className="max-h-full max-w-full object-contain" draggable={false} />}
+                  {errB && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span>}
+                </div>
+              </div>
+            )
           ) : (
             <div
               className="relative flex min-h-0 flex-1 items-stretch overflow-hidden bg-black"
@@ -615,6 +669,7 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                     </ImageFrameConstraint>
                   </div>
                 )}
+                {errA && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeA}</span>}
               </div>
               <div className="w-px bg-border" />
               <div className="relative flex min-w-0 flex-1 items-center justify-center">
@@ -629,6 +684,7 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
                     </ImageFrameConstraint>
                   </div>
                 )}
+                {errB && <span className="absolute text-[12px] text-text-tertiary">Stream unavailable for {badgeB}</span>}
               </div>
             </div>
           )}
@@ -641,6 +697,7 @@ export function CompareOverlay({ asset, versions, rightVersion, onClose, canComm
               <CommentPanel
                 comments={sideB.comments}
                 currentUserId={user?.id}
+                canModerate={canModerate}
                 onResolve={async (id) => { await sideB.resolveComment(id) }}
                 onDelete={async (id) => { await sideB.deleteComment(id) }}
                 onAddReaction={async (id, e) => { await sideB.addReaction(id, e) }}

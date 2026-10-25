@@ -76,12 +76,12 @@ export async function openProject(page: Page, label: string) {
  * A fresh project of `account`'s, open in `page`, with no upload of this
  * browser's left over, and ready to take a drop.
  *
- * The page takes a drop only once it knows the account may upload here: the
- * role comes from the project's members matched against `/auth/me`, and until
- * both have answered it is "viewer", so a drop goes nowhere (no row, no
- * message). The header's Upload button is drawn on the same condition, and the
- * empty project's own regardless, so two of them means the role is known. The
- * same wait as `tests/leave.spec.ts`.
+ * The page decides on a drop once it knows the account's role: the role comes
+ * from the project's members matched against `/auth/me`, and a drop made before
+ * both have answered is held until then (#546). The header's Upload menu and the
+ * empty project's Upload button are both drawn only for a role that may upload,
+ * so two of them means the role is known and a drop starts at once. The same
+ * wait as `tests/leave.spec.ts`.
  */
 export async function openCleanProject(page: Page, label: string, account: Account) {
   await signIn(page, account)

@@ -409,9 +409,9 @@ read off disk.
 4. The Uploads panel opens by itself on a drop. Pick its **All** tab if the scenario is about
    terminal states.
 
-**Dialog path** (the project's "Upload" button, its `UploadZone` file input, then "Start
-upload"): the same files go through `upload_file`, but the app starts every file when "Start
-upload" is clicked. Use it only for scenarios about the dialog. Not exercised.
+**Menu path** (the toolbar's Upload menu, then Upload files or Upload folder): the picked files
+start at once, exactly as a drop does. The Upload asset dialog and its `UploadZone` were removed
+in #575. Not exercised.
 
 `touch` / `rm` / `rewrite` for U1 and U2 act on the real files in `e2e/.live-files/`
 (`touch f`, `rm f`, `head -c <n> /dev/urandom > f`). Chrome reads a `File` lazily, so a

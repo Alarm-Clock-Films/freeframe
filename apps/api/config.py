@@ -16,6 +16,9 @@ JWT_ALGORITHMS = ("HS256", "HS384", "HS512")
 
 TRANSCODE_RUNNERS = ("inline", "vercel_sandbox")
 
+# Storage classes whose objects cannot be read until they are restored.
+ARCHIVE_STORAGE_CLASSES = ("GLACIER", "DEEP_ARCHIVE")
+
 
 def _is_aws_endpoint(url: str) -> bool:
     """True if `url`'s host is an AWS S3 endpoint (an ``*.amazonaws.com`` host)."""
@@ -66,6 +69,11 @@ class Settings(BaseSettings):
     # NotImplemented) and CORS is configured on the provider directly; otherwise
     # every start, and on Vercel every new function instance, logs a warning.
     s3_manage_bucket_cors: bool = True
+    # Storage class for media: uploaded originals and every transcoder output.
+    # Sent when the object is created (CreateMultipartUpload for an original),
+    # never by the browser. Unset sends no class, so the bucket default applies;
+    # MinIO and Silo refuse everything but STANDARD and REDUCED_REDUNDANCY.
+    s3_storage_class: str | None = None
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
@@ -122,6 +130,8 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 0
 
     # Reaper: uploads stuck in `uploading`/`failed` longer than this are reclaimed. Hours.
+    # A `failed` version whose master is still in storage (a transcode that failed)
+    # is kept.
     # A version claimed as `processing` whose transcode never ran is re-dispatched
     # after this long. It must stay comfortably above the transcoder's own 4-hour
     # ceiling, or a legitimately slow encode gets a second worker on top of it.
@@ -200,6 +210,27 @@ class Settings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
     smtp_use_tls: bool = True
+
+    @field_validator("s3_storage_class")
+    @classmethod
+    def _check_s3_storage_class(cls, value: str | None) -> str | None:
+        """Normalise S3_STORAGE_CLASS, and refuse a class FreeFrame cannot read.
+
+        Only the archive classes are refused: every object is streamed or
+        downloaded directly, and these need a restore before any read. Anything
+        else is passed through, because providers name their own tiers.
+        """
+        value = (value or "").strip().upper()
+        if not value:
+            return None
+        if value in ARCHIVE_STORAGE_CLASSES:
+            raise ValueError(
+                f"S3_STORAGE_CLASS={value} is an archive class. FreeFrame reads "
+                f"media directly, and objects in {value} need a restore before "
+                f"they can be read. Leave it unset or pick a class that can be "
+                f"read immediately."
+            )
+        return value
 
     @field_validator("jwt_secret")
     @classmethod

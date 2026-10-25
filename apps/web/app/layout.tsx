@@ -9,6 +9,7 @@ import { accentVars, ACCENT_CACHE_KEY } from "@/lib/accent";
 import { withBasePath } from "@/lib/base-path";
 import { vercelInsightsEnabled } from "@/lib/insights";
 import { VercelInsights } from "@/components/shared/vercel-insights";
+import { logoUrlFromApi } from "@/lib/branding-logo";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -74,8 +75,8 @@ export default async function RootLayout({
   children: React.ReactNode;
 }) {
   const branding = await getServerBranding();
-  const favicon = branding?.favicon_url || withBasePath(DEFAULT_FAVICON);
-  const appleIcon = branding?.apple_icon_url || withBasePath(DEFAULT_APPLE_ICON);
+  const favicon = logoUrlFromApi(branding?.favicon_url) || withBasePath(DEFAULT_FAVICON);
+  const appleIcon = logoUrlFromApi(branding?.apple_icon_url) || withBasePath(DEFAULT_APPLE_ICON);
   // Painting the accent from the server too, so a branded instance does not
   // render one frame in the product's default purple before the store lands.
   const accent = accentVars(branding?.primary_color ?? null);

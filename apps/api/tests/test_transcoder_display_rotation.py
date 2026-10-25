@@ -24,6 +24,7 @@ from packages.transcoder.base import TranscodeJob
 from packages.transcoder.ffmpeg_transcoder import (
     FFmpegTranscoder,
     _plan_attempts,
+    display_rotation,
     is_display_transformed,
 )
 
@@ -136,6 +137,10 @@ def _is_software(cmd):
     # A flip has no rotation to show for it, and ffmpeg still turns the frames.
     (VFLIP, True),
     ({"tags": {"rotate": "90"}}, True),
+    # A rotation nobody can read may still be one, so the frames go the way
+    # that turns them (#380).
+    ({"tags": {"rotate": "abc"}}, True),
+    ({"tags": {"rotate": "nan"}}, True),
     ({}, False),
     ({"tags": {"rotate": "0"}}, False),
     ({"side_data_list": [{"side_data_type": "Content Light Level"}]}, False),
@@ -144,6 +149,24 @@ def _is_software(cmd):
 ])
 def test_a_display_matrix_is_what_ffmpeg_turns_the_frames_for(stream, expected):
     assert is_display_transformed(stream) is expected
+
+
+@pytest.mark.parametrize("rotate", ["nan", "inf", "-inf", "abc"])
+def test_a_rotation_that_cannot_be_read_is_never_a_nan(rotate):
+    # float() accepts "nan" and "inf", and `% 360` keeps them NaN, which the
+    # NVENC sizing then hands to round(). What the copy gate needs from such a
+    # value is rotation_unreadable(), not a number (#380).
+    assert display_rotation({"tags": {"rotate": rotate}}) == 0.0
+
+
+def test_a_rotate_tag_of_nan_still_builds_an_nvenc_command():
+    # round(nan) raised ValueError while sizing the rungs, failing the job.
+    result, calls = _transcode({**H264, "tags": {"rotate": "nan"}})
+
+    assert result.success is True
+    assert len(calls) == 1
+    assert _decodes_into_memory_on_nvdec(calls[0]), calls[0]
+    assert _boxes(calls[0]) == {"1080p": "1920:1080", "720p": "1280:720", "360p": "640:360"}
 
 
 @pytest.mark.parametrize("primary, encode, stream, expected", [
@@ -196,28 +219,37 @@ def test_an_unrotated_source_on_nvenc_keeps_its_cuda_frames():
 
 
 def test_a_portrait_rotated_clip_gets_portrait_rungs_on_nvenc():
-    # 1920x1080 stored, displayed 1080x1920. The boxes stay as they are: what
-    # changes is that the scaler is handed the upright frame.
+    # 1920x1080 stored, displayed 1080x1920. The scaler is handed the upright
+    # frame, and the boxes are turned to match it (#452).
     _, calls = _transcode({**H264, **ROTATED_90})
 
-    assert _boxes(calls[0]) == {"1080p": "1920:1080", "720p": "1280:720", "360p": "640:360"}
+    assert _boxes(calls[0]) == {"1080p": "1080:1920", "720p": "720:1280", "360p": "360:640"}
     assert _decodes_into_memory_on_nvdec(calls[0])
 
 
 def test_a_narrow_rotated_clip_is_sized_upright_on_the_first_attempt():
-    # 1920x720 with a 90-degree matrix is 720x1920 upright, whose 360p fit
-    # (136x360) is under h264_nvenc's minimum, so the box is enlarged on the
+    # 1920x400 with a 90-degree matrix is 400x1920 upright, whose 360p fit
+    # (134x640) is under h264_nvenc's minimum, so the box is enlarged on the
     # NVDEC attempt as it already was on the CPU-decode one.
-    result, calls = _transcode({**H264, **ROTATED_90}, width=1920, height=720,
+    result, calls = _transcode({**H264, **ROTATED_90}, width=1920, height=400,
                                failures=[NVDEC_REFUSAL])
 
     assert result.success is True
     nvdec, cpu_decode = calls
     assert _decodes_into_memory_on_nvdec(nvdec)
-    assert _boxes(nvdec) == {"720p": "1280:720", "360p": "146:390"}
+    assert _boxes(nvdec) == {"360p": "146:702"}
     assert "-hwaccel" not in cpu_decode
     assert _graph(cpu_decode).startswith("[0:V:0]format=nv12,hwupload_cuda[up];")
-    assert _boxes(cpu_decode) == {"720p": "1280:720", "360p": "146:390"}
+    assert _boxes(cpu_decode) == {"360p": "146:702"}
+
+
+def test_a_hardware_frame_is_sized_as_it_is_stored():
+    # QSV decodes a rotated source into hardware frames, which ffmpeg does not
+    # turn, so its scaler is handed 1920x1080 and the boxes stay landscape.
+    _, calls = _transcode({**H264, **ROTATED_90}, backend="qsv")
+
+    assert "-hwaccel_output_format" in calls[0]
+    assert _boxes(calls[0]) == {"1080p": "1920:1080", "720p": "1280:720", "360p": "640:360"}
 
 
 def test_a_flip_does_not_swap_the_sizing():

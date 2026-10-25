@@ -42,6 +42,10 @@ log = logging.getLogger(__name__)
 MAGIC_CODE_FAILURE_DETAIL = (
     "Invalid or expired code. Request a new code if you've tried several times."
 )
+INVITE_NOT_ACCEPTED_DETAIL = (
+    "You have a pending invite. Open the invite link from your email to accept it, "
+    "or ask an admin for a new link."
+)
 
 MAGIC_CODE_EXPIRY_MINUTES = MAGIC_CODE_EXPIRY_SECONDS // 60
 
@@ -77,23 +81,30 @@ def send_magic_code(body: SendMagicCodeRequest, db: Session = Depends(get_db)):
 
     # Per-address limit. Over it, answer as usual but send nothing, so the
     # limit neither floods the inbox nor shows which addresses have accounts.
-    # The code already sent stays valid: it is not replaced.
-    if not reserve_magic_code_send(body.email):
-        log.warning("Sign-in code not sent: %s is over its per-address limit", _mask_email(body.email))
+    # The code already sent stays valid: it is not replaced. Counted against
+    # the stored address, the inbox the email goes to.
+    if not reserve_magic_code_send(user.email):
+        log.warning("Sign-in code not sent: %s is over its per-address limit", _mask_email(user.email))
         return SendMagicCodeResponse(
             message="Magic code sent to your email",
             email=body.email,
         )
 
-    # Generate and store magic code in Redis
+    # Generate and store magic code in Redis, keyed by the account rather than
+    # the typed address. An instance can hold two accounts differing only by
+    # case, and an address key (lowercased) would let one of them verify the
+    # other's code.
     code = generate_magic_code()
-    store_magic_code(body.email, code)
+    store_magic_code(str(user.id), code)
 
     # Queue email via Celery (async)
     try:
         branding = db.query(InstanceBranding).first()
         org_name = branding.org_name if branding else None
-        send_task_safe(send_magic_code_email, body.email, code, MAGIC_CODE_EXPIRY_MINUTES, org_name)
+        # To the stored address, not the typed one: the lookup ignores case. The
+        # response below still echoes what was typed, as it does for an unknown
+        # address, so the stored spelling never leaks.
+        send_task_safe(send_magic_code_email, user.email, code, MAGIC_CODE_EXPIRY_MINUTES, org_name)
     except Exception:
         pass  # Email delivery is best-effort; code is already in Redis
 
@@ -117,12 +128,22 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=401, detail=MAGIC_CODE_FAILURE_DETAIL)
 
     # Verify magic code from Redis
-    success, error = redis_verify_magic_code(body.email, body.code)
+    success, error = redis_verify_magic_code(str(user.id), body.code)
     if not success:
         raise HTTPException(status_code=401, detail=MAGIC_CODE_FAILURE_DETAIL)
     # Signed in: their next code request starts back at the shortest wait.
-    clear_magic_code_sends(body.email)
+    clear_magic_code_sends(user.email)
     
+    # An invite is accepted on the invite screen, not by signing in. Without
+    # this an invitee who used the login page got tokens and used the app while
+    # still listed as pending, and Revoke Invite deleted a working account.
+    # Checked after the code, so only the mailbox's owner learns of the invite.
+    # A pending row whose email is already verified is an invitee an earlier
+    # release let in by code: a working account, still signed in that way, or
+    # they would be locked out with no invite left to resend or revoke.
+    if user.status == UserStatus.pending_invite and not user.email_verified:
+        raise HTTPException(status_code=403, detail=INVITE_NOT_ACCEPTED_DETAIL)
+
     # Mark email as verified
     user.email_verified = True
     
@@ -163,7 +184,9 @@ def get_invite_info(token: str, db: Session = Depends(get_db)):
         User.deleted_at.is_(None),
     ).first()
     
-    if not user:
+    # A deactivated invitee gets the same 404 as an unknown token: deactivating
+    # withdraws the invite, and a different answer would reveal the account.
+    if not user or user.status == UserStatus.deactivated:
         raise HTTPException(status_code=404, detail="Invalid invite link")
     
     if user.invite_token_expires_at and user.invite_token_expires_at < datetime.now(timezone.utc):
@@ -183,7 +206,9 @@ def accept_invite(body: AcceptInviteRequest, db: Session = Depends(get_db)):
         User.deleted_at.is_(None),
     ).first()
     
-    if not user:
+    # Without the status check a deactivated invitee walked past the
+    # deactivation: everything below sets status=active and hands out tokens.
+    if not user or user.status == UserStatus.deactivated:
         raise HTTPException(status_code=404, detail="Invalid invite link")
     
     if user.invite_token_expires_at and user.invite_token_expires_at < datetime.now(timezone.utc):
@@ -219,7 +244,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         or user.status == UserStatus.deactivated
     ):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    clear_magic_code_sends(body.email)
+    clear_magic_code_sends(user.email)
     return TokenResponse(
         access_token=create_access_token(str(user.id), token_version=user.token_version),
         refresh_token=create_refresh_token(str(user.id), token_version=user.token_version),

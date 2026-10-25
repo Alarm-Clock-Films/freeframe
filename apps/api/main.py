@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -11,6 +12,32 @@ from .services.email_service import mail_is_configured
 from .middleware.global_rate_limit import GlobalRateLimitMiddleware
 from .middleware.setup_guard import SetupGuardMiddleware
 from .middleware.security_headers import SecurityHeadersMiddleware
+
+
+# Paths whose next segment is a credential: an invite token sets the account's
+# password, and a share token opens the link.
+_TOKEN_IN_PATH = re.compile(r"^(/auth/invite/|/share/)[^/]+")
+
+
+class _DropQueryStringFilter(logging.Filter):
+    """Keep credentials out of the access log. Some URLs carry them in the query
+    string, because the client cannot send a header there: `?token=` on /hls
+    (hls.js segment fetches) and /events (EventSource), `?share_session=` on the
+    share routes. Others carry one in the path (`_TOKEN_IN_PATH`), which is
+    replaced with `<redacted>`. uvicorn logs the path with its query as the
+    third argument."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = _TOKEN_IN_PATH.sub(r"\1<redacted>", args[2].split("?", 1)[0])
+            record.args = args[:2] + (path,) + args[3:]
+        return True
+
+
+# On the logger rather than a handler: gunicorn's UvicornWorker replaces this
+# logger's handlers with its own (--access-logfile) but leaves its filters alone.
+logging.getLogger("uvicorn.access").addFilter(_DropQueryStringFilter())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,6 +90,13 @@ if settings.cors_allows_any_origin:
 else:
     _cors_origin_kwargs = {"allow_origins": settings.cors_origins}
 
+app.add_middleware(GlobalRateLimitMiddleware)
+app.add_middleware(SetupGuardMiddleware)
+# add_middleware prepends, so the one added last runs first. CORS has to be
+# outermost: the limiter's 429 and the setup guard's 503 are returned without
+# reaching anything inside them, and without CORS headers the browser hides
+# the status (and Retry-After) behind a network error (#525). It also answers
+# preflights before they count against the read limit.
 app.add_middleware(
     CORSMiddleware,
     **_cors_origin_kwargs,
@@ -71,10 +105,8 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "Retry-After"],
 )
-app.add_middleware(GlobalRateLimitMiddleware)
-app.add_middleware(SetupGuardMiddleware)
-# Added last, so it is outermost: rate-limit and setup-guard responses get the
-# headers too.
+# Added after CORS, so it is outermost of all: every response gets the
+# headers, including CORS preflights, 429s and the setup guard's 503.
 app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth.router)

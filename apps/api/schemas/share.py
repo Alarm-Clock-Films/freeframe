@@ -73,6 +73,14 @@ class ShareLinkResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ShareBranding(BaseModel):
+    """The project's branding, as a share page shows it. A null field means
+    the page falls back to the instance's own (logo, accent) or shows none."""
+    logo_url: Optional[str] = None  # loadable link: the cover or the uploaded logo
+    primary_color: Optional[str] = None
+    custom_footer: Optional[str] = None
+
+
 class ShareLinkValidateResponse(BaseModel):
     asset_id: Optional[uuid.UUID] = None
     folder_id: Optional[uuid.UUID] = None
@@ -95,7 +103,7 @@ class ShareLinkValidateResponse(BaseModel):
     viewer_avatar_url: Optional[str] = None  # Logged-in user's picture, already signed
     viewer_avatar_color: Optional[str] = None  # Logged-in user's circle colour
     asset: Optional[dict] = None  # Full asset details for asset shares
-    branding: Optional[dict] = None  # Project branding info
+    branding: Optional[ShareBranding] = None  # Set on every full response, for every link type
     share_session: Optional[str] = None  # Session token for password-protected links
 
 
@@ -136,6 +144,13 @@ class ShareLinkListItem(BaseModel):
     view_count: int = 0
     last_viewed_at: Optional[datetime] = None
     created_at: datetime
+    expires_at: Optional[datetime] = None
+    # True once expires_at has passed: the share page no longer opens the link.
+    is_expired: bool = False
+    # Set only when the list is asked about one asset (`?asset_id=`): "direct" when the
+    # link is that asset or lists it, "indirect" when it shows it through a folder or the
+    # whole project, None when it does not show it.
+    contains_asset: Optional[Literal["direct", "indirect"]] = None
     model_config = {"from_attributes": True}
 
 

@@ -57,7 +57,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const { asset, versions, isLoading, refetchComments, refetchVersions } = useReview()
+  const { asset, versions, isLoading, refetchComments, refetchVersions, togglePlayback } = useReview()
   const { currentVersion, isDrawingMode, focusedCommentId, playheadTime, seekTo, setFocusedCommentId, setActiveAnnotation } = useReviewStore()
   const { user } = useAuthStore()
   const startVersionUpload = useUploadStore((s) => s.startVersionUpload)
@@ -84,7 +84,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const useSheet = !isWide && !isLandscape
   const [sheetState, setSheetState] = useState<SheetState>('peek')
   const [sheetHeight, setSheetHeight] = useState(PEEK_PX)
-  const { isPlaying, togglePlay } = useMediaTransport()
+  const { isPlaying, togglePlay, mediaRootRef } = useMediaTransport({ toggleVideo: togglePlayback })
   const reviewRootRef = useRef<HTMLDivElement>(null)
 
   // MUST be stable: MobileCommentSheet lists it as an effect dependency, so an
@@ -177,6 +177,8 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   const currentMember = members?.find((m) => m.user_id === user?.id)
   const currentRole = currentMember?.role ?? 'viewer'
   const canComment = currentRole !== 'viewer'
+  // delete_comment lets a project owner remove anyone's comment.
+  const canModerate = currentRole === 'owner'
 
   // Prev/next walks the asset's own folder in the order the project view shows
   // it, not the whole project. Same key as the project page, so the list is
@@ -274,11 +276,12 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
   }, [comments, searchParams, seekTo, setFocusedCommentId, setActiveAnnotation])
 
   // Version-compare overlay: driven entirely by the ?compare= URL param so it
-  // survives refresh/deep-link. closeCompare strips all the compare params.
+  // survives refresh/deep-link (?right= names the right pane, see ReviewPage).
+  // closeCompare strips all the compare params.
   const compareOpen = Boolean(searchParams.get('compare'))
   const closeCompare = useCallback(() => {
     const p = new URLSearchParams(searchParams.toString())
-    p.delete('compare'); p.delete('mode'); p.delete('offA'); p.delete('offB'); p.delete('offFor')
+    p.delete('compare'); p.delete('right'); p.delete('mode'); p.delete('offA'); p.delete('offB'); p.delete('offFor')
     router.replace(`${pathname}?${p.toString()}`, { scroll: false })
   }, [router, pathname, searchParams])
 
@@ -491,6 +494,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     <CommentPanel
       comments={comments as any}
       currentUserId={user?.id}
+      canModerate={canModerate}
       onResolve={resolveComment}
       onDelete={deleteComment}
       onAddReaction={addReaction}
@@ -550,8 +554,10 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
     <div className="absolute inset-0 flex flex-col overflow-hidden">
       {/* ─── Top bar (Frame.io style) ──────────────────────────────────── */}
       <div className="flex items-center justify-between border-b border-border px-3 h-12 bg-bg-secondary shrink-0">
-        {/* Left: back + breadcrumb */}
-        <div className="flex items-center gap-1 min-w-0 flex-1">
+        {/* Left: back + breadcrumb. The name is the first thing the bar gives
+            up; `min-w-7` keeps the back arrow, which at zero width spilled out
+            into the centre group and had the navigator drawn over it. */}
+        <div className="flex items-center gap-1 min-w-7 flex-1">
           {/* Back to the folder the asset is in, as a share link's back arrow
               does; it used to go to the project root from anywhere. */}
           <Link
@@ -587,15 +593,24 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
             navigator is not rendered and the credit is centred alone, exactly
             as before.
 
-            The credit is `hidden` below `lg` because in flow it is 147px that
-            nothing can reclaim: the middle group does not shrink, and neither
-            does the block on the right, so the surplus leaves the bar past its
-            right edge, where the page root's `overflow-hidden` clips it and no
-            scroll reaches it. That costs the sidebar toggle from about 744px
-            down -- an iPad in portrait, or two windows side by side. Out of
-            flow below `lg`, the thresholds are the ones this page had before
-            the credit joined the bar at all. */}
-        <div className="flex items-center gap-3 shrink-0">
+            The block on the right does not shrink, and anything that leaves
+            the bar past its right edge is clipped by the page root's
+            `overflow-hidden`, where no scroll reaches it -- the sidebar toggle
+            first. So once the asset name is down to nothing, the credit is
+            what gives way: this group can shrink (`min-w-0`, no `shrink-0`),
+            the navigator inside it cannot, and the credit truncates its text.
+            Gating the credit on viewport width alone did not cover it: the bar
+            is also 168px narrower with the rail expanded, and a raised browser
+            text size grows every rem while the `lg` media query stays put. At
+            1024px, rail expanded, Compare and the navigator showing, 57px of
+            name was all that was left, and at a 20px text size the toggle was
+            off-screen.
+
+            The credit is still `hidden` below `lg`, where the room it would
+            take is room the controls need at every width. Out of flow there,
+            the thresholds are the ones this page had before the credit joined
+            the bar at all. */}
+        <div className="flex items-center gap-3 min-w-0">
           {totalAssets > 1 && (
             <div className="flex items-center gap-1 shrink-0">
               <button
@@ -619,7 +634,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
               </button>
             </div>
           )}
-          <PoweredByBadge showIcon className="hidden lg:inline-flex" />
+          <PoweredByBadge showIcon className="hidden lg:inline-flex min-w-0 [&>span]:truncate" />
         </div>
 
         {/* Right: version, share, sidebar toggle */}
@@ -656,6 +671,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
                 if (!prev) return
                 const p = new URLSearchParams(searchParams.toString())
                 p.set('compare', prev.id)
+                p.set('right', cur.id)
                 router.replace(`${pathname}?${p.toString()}`, { scroll: false })
               }}
               className="inline-flex items-center gap-1.5 rounded-md px-2.5 h-8 text-xs font-medium border border-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
@@ -696,7 +712,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
 
       {/* ─── Main content: viewer + sidebar ────────────────────────────── */}
       {compareOpen && asset && currentVersion && canCompare(asset.asset_type, versions) ? (
-        <CompareOverlay asset={asset} versions={versions} rightVersion={currentVersion} onClose={closeCompare} canComment={canComment} />
+        <CompareOverlay asset={asset} versions={versions} rightVersion={currentVersion} onClose={closeCompare} canComment={canComment} canModerate={canModerate} />
       ) : (
       <>
       {/* pb-14 (3.5rem = PEEK_PX) reserves the sheet's peek band so the
@@ -709,6 +725,7 @@ function ReviewScreenInner({ projectId }: { projectId: string }) {
       >
         {/* Left: viewer column */}
         <div
+          ref={mediaRootRef}
           className="flex-1 flex flex-col bg-bg-primary overflow-hidden min-w-0"
         >
           {/* What a New Version is waiting for, over the media and not over the
@@ -791,9 +808,13 @@ export default function ReviewPage({
   params: Promise<{ id: string; assetId: string }>
 }) {
   const { id: projectId, assetId } = use(params)
+  // The right compare pane is the store's current version, which a reload does
+  // not keep, so a compare URL names it and the provider opens on it (#299).
+  const searchParams = useSearchParams()
+  const initialVersionId = searchParams.get('compare') ? searchParams.get('right') : null
 
   return (
-    <ReviewProvider assetId={assetId}>
+    <ReviewProvider assetId={assetId} initialVersionId={initialVersionId}>
       <ReviewScreenInner projectId={projectId} />
     </ReviewProvider>
   )
