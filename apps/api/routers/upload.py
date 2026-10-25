@@ -34,6 +34,7 @@ from ..schemas.upload import (
     CompleteUploadRequest, CompleteUploadResponse, AbortUploadRequest,
     ResumeUploadResponse,
     ALLOWED_MIME_TYPES, CHUNK_SIZE_BYTES, _format_bytes, mime_to_asset_type,
+    safe_raw_extension,
 )
 from ..services.storage import choose_part_size, upload_guard_error
 from ..services.versions import next_version_number
@@ -113,7 +114,12 @@ def initiate_upload(
     db.add(version)
     db.flush()
 
-    ext = os.path.splitext(body.original_filename)[1].lower()
+    # The extension is derived from the validated mime type, never taken from the
+    # client filename: it ends up in the presigned URL FFmpeg reads, and an
+    # attacker-chosen playlist/manifest extension (.m3u8, .xml, …) would change
+    # which demuxer runs and let the worker be steered into fetching arbitrary
+    # segment URLs (local-file disclosure / SSRF). See safe_raw_extension.
+    ext = safe_raw_extension(body.original_filename, body.mime_type)
     s3_key = f"raw/{body.project_id}/{asset.id}/{version.id}/original{ext}"
 
     # Initiate S3 multipart upload

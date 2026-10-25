@@ -96,8 +96,17 @@ def _graph(cmd):
 
 
 def _global_args(cmd):
-    """What comes before -i: the decode the command asks for."""
-    return cmd[2:cmd.index("-i")]
+    """What comes before -i: the decode the command asks for.
+
+    The `-protocol_whitelist <value>` pair that guards the untrusted input is
+    also an input option (it has to precede -i), so it lands in this span; it is
+    not part of the decode this helper describes, so drop it before comparing.
+    """
+    pre = cmd[2:cmd.index("-i")]
+    if "-protocol_whitelist" in pre:
+        i = pre.index("-protocol_whitelist")
+        del pre[i:i + 2]
+    return pre
 
 
 def _boxes(cmd):

@@ -127,6 +127,58 @@ def mime_to_asset_type(mime_type: str) -> AssetType:
         return AssetType.video
     raise ValueError(f"Unsupported mime type: {mime_type}")
 
+
+# Media extensions a raw object key may safely carry. The point is NOT download
+# naming (that is rebuilt from the served key at download time) but what FFmpeg
+# makes of the key: it uses the URL's extension to pick a demuxer, so an
+# attacker who controls the extension of the raw object controls which demuxer
+# runs against the file the transcoder streams from the presigned URL. A key
+# ending in `.m3u8`/`.m3u`/`.xml`/`.txt` is read as an HLS/DASH/concat PLAYLIST,
+# and the worker then fetches whatever "segment" URLs the uploaded bytes name
+# (file:// for local disclosure, http:// for SSRF to cloud metadata or internal
+# services). The key's extension comes from the client-supplied filename, so it
+# is never trusted: it is replaced with one derived from the already-validated
+# mime type, falling back to the original only when it is a known-safe, plain
+# media extension (never a playlist/manifest one).
+_MIME_CANONICAL_EXT = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+    "image/heic": ".heic", "image/tiff": ".tiff", "image/gif": ".gif",
+    "audio/mpeg": ".mp3", "audio/aac": ".aac", "audio/ogg": ".ogg",
+    "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav",
+    "audio/vnd.wave": ".wav", "audio/x-pn-wav": ".wav",
+    "audio/aiff": ".aiff", "audio/x-aiff": ".aiff",
+    "audio/flac": ".flac", "audio/x-flac": ".flac",
+    "audio/x-m4a": ".m4a", "audio/mp4": ".m4a",
+    "video/mp4": ".mp4", "video/x-m4v": ".m4v", "video/quicktime": ".mov",
+    "video/x-msvideo": ".avi", "video/avi": ".avi",
+    "video/x-matroska": ".mkv", "video/matroska": ".mkv",
+    "video/webm": ".webm", "video/mpeg": ".mpg", "video/x-ms-wmv": ".wmv",
+}
+# Plain-media extensions that are safe to keep verbatim. Deliberately excludes
+# every playlist/manifest/text container FFmpeg treats as a list of other URLs
+# (m3u8, m3u, xml/mpd, txt, concat, ...).
+_SAFE_RAW_EXTENSIONS = frozenset(_MIME_CANONICAL_EXT.values()) | {
+    ".jpeg", ".tif", ".heif", ".m4a", ".wave", ".aif", ".mov", ".qt",
+    ".mpeg", ".mpg", ".m2v",
+}
+
+
+def safe_raw_extension(original_filename: str, mime_type: str) -> str:
+    """A safe extension for the raw object key — never one the client controls.
+
+    Keeps the uploaded file's own extension only when it is a plain media
+    extension; otherwise uses the canonical extension for the validated mime
+    type. This stops a client from making the stored key (and so the presigned
+    URL FFmpeg reads) end in a playlist/manifest extension that would change
+    which demuxer runs. The original filename is still kept verbatim on the
+    MediaFile row for display and download naming.
+    """
+    import os as _os
+    ext = _os.path.splitext(original_filename or "")[1].lower()
+    if ext in _SAFE_RAW_EXTENSIONS:
+        return ext
+    return _MIME_CANONICAL_EXT.get(mime_type, ".bin")
+
 class InitiateUploadRequest(BaseModel):
     project_id: uuid.UUID
     asset_name: str
