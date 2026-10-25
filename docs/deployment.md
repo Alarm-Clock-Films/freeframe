@@ -173,6 +173,15 @@ location /api/ {
 
 Traefik in the bundled Compose already routes the sub-path to the web app and `/api` to the API, so forwarding both to FreeFrame's port 80 is enough; only a proxy that terminates the sub-path itself has to name the API separately. Leave `NEXT_PUBLIC_BASE_PATH` empty for a root deployment (the default).
 
+### Search Engines
+
+FreeFrame asks search engines not to index it, with nothing to configure:
+
+- `/robots.txt` disallows the whole site, the API included, for every crawler (`apps/web/app/robots.ts`).
+- Every page and every API response sends `X-Robots-Tag: noindex, nofollow`, and every page carries `<meta name="robots" content="noindex, nofollow">`.
+
+These are requests that well-behaved crawlers follow, not access control: what keeps content private is still sign-in, and share-link passwords and expiry. Under a sub-path, crawlers only read `robots.txt` at the domain root, so FreeFrame's own copy at `/freeframe/robots.txt` goes unread; the header and meta tag still apply. Add a `Disallow: /freeframe/` line to the root site's `robots.txt` if you want that too.
+
 ---
 
 ## Bring Your Own Infrastructure
