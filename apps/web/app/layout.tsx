@@ -26,11 +26,17 @@ const dmSans = DM_Sans({
 // removes competing icon links with `el.remove()`, which throws when the node
 // belongs to React. The icon links are rendered in `<head>` below instead,
 // carrying the `data-ff-branding` attribute that sweep is written to skip.
+/** `<meta name="robots" content="noindex, nofollow">`, on every page. */
+const NOINDEX: Metadata["robots"] = { index: false, follow: false };
+
 export async function generateMetadata(): Promise<Metadata> {
   const branding = await getServerBranding();
   return {
     title: branding?.org_name || "FreeFrame",
     description: "Collaborative media review and approval platform",
+    // Keep every page out of search results (see app/robots.ts). Child
+    // layouts and pages inherit this unless they set `robots` themselves.
+    robots: NOINDEX,
   };
 }
 

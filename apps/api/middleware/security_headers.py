@@ -15,6 +15,9 @@ SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     # No API response is meant to be shown in a frame.
     (b"x-frame-options", b"DENY"),
     (b"referrer-policy", b"strict-origin-when-cross-origin"),
+    # Keep API responses (JSON, HLS playlists, comment attachments) out of
+    # search results. The web app sends the same header and a robots.txt.
+    (b"x-robots-tag", b"noindex, nofollow"),
 )
 
 

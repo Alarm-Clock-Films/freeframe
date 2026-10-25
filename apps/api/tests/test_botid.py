@@ -122,6 +122,15 @@ def test_api_responses_carry_security_headers(client):
     assert resp.headers["referrer-policy"] == "strict-origin-when-cross-origin"
 
 
+def test_api_responses_ask_search_engines_not_to_index_them(client, mock_db, botid_on):
+    assert client.get("/health").headers["x-robots-tag"] == "noindex, nofollow"
+    # Errors too, e.g. a share link that no longer resolves.
+    mock_db.first.return_value = None
+    resp = _send_code(client)
+    assert resp.status_code == 403
+    assert resp.headers["x-robots-tag"] == "noindex, nofollow"
+
+
 def test_error_responses_carry_them_too(client, mock_db, botid_on):
     mock_db.first.return_value = None
     resp = _send_code(client)

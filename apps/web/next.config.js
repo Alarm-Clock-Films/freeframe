@@ -42,12 +42,23 @@ const securityHeaders = [
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()' },
 ]
 
+/**
+ * FreeFrame is a private workspace: sign-in pages, projects and share links
+ * should never show up in search results. This header covers every response
+ * the web app serves, including the share pages (anyone can reach those) and
+ * deployments under NEXT_PUBLIC_BASE_PATH, where a crawler never reads the
+ * sub-path robots.txt. The root layout sets the same rule as a <meta> tag and
+ * app/robots.ts asks crawlers to stay out. The API sends it too
+ * (apps/api/middleware/security_headers.py).
+ */
+const noIndexHeaders = [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }]
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   basePath,
   env,
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }]
+    return [{ source: '/:path*', headers: [...securityHeaders, ...noIndexHeaders] }]
   },
   // The Docker images run the standalone server; Vercel builds its own output.
   output: onVercel ? undefined : 'standalone',

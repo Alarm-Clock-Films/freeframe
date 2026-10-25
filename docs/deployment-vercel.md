@@ -179,7 +179,9 @@ must then be changed to `deepAnalysis` in both places.
 Every page also sends `X-Frame-Options: SAMEORIGIN`, `frame-ancestors 'self'`,
 `nosniff`, a referrer policy and a permissions policy (`apps/web/next.config.js`),
 and every API response sends `nosniff`, `X-Frame-Options: DENY` and a referrer
-policy (`apps/api/middleware/security_headers.py`).
+policy (`apps/api/middleware/security_headers.py`). Both also send
+`X-Robots-Tag: noindex, nofollow`, and `/robots.txt` disallows the whole site;
+see [Search Engines](deployment.md#search-engines).
 
 ## Analytics and Speed Insights
 

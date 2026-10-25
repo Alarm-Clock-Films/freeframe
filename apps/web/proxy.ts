@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { withBasePath } from './lib/base-path'
 
-const PUBLIC_ROUTES = ['/login', '/setup']
+// /robots.txt is read by crawlers, which never sign in.
+const PUBLIC_ROUTES = ['/login', '/setup', '/robots.txt']
 // /botid/ is called from the login and share pages, before anyone is signed in.
 // BOTID_PROXY_PREFIX is where BotID's own script and requests are served
 // (rewritten to Vercel by withBotId in next.config.js); a redirect to /login
