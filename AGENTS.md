@@ -160,7 +160,10 @@ Read this section before writing backend code or tests.
   heading (Keep a Changelog format: `Added` / `Changed` / `Fixed`). Don't invent or cut a
   version — releases are handled separately.
 - **UI changes:** include before/after screenshots in the PR (see
-  `.github/PULL_REQUEST_TEMPLATE.md`).
+  `.github/PULL_REQUEST_TEMPLATE.md`). If you host them on a separate branch with no app
+  code (e.g. an orphan `pr-assets/<slug>` branch), give that branch its own `vercel.json`
+  with `{"git": {"deploymentEnabled": false}}`. Main's "only `main` deploys" rule lives in
+  main's `vercel.json`, so a branch without it gets built and fails with `MISSING_SERVICES`.
 - **Docs:** update `docs/` or user-facing text when you change behavior.
 
 ---
