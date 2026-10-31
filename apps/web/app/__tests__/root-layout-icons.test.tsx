@@ -7,7 +7,7 @@
  * the web app's own origin and load a 404 as the tab icon until BrandingHead
  * corrected it after hydration.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { InstanceBranding } from '@/stores/branding-store'
 
@@ -19,7 +19,7 @@ vi.mock('next/font/google', () => ({
   DM_Sans: () => ({ variable: 'font-dm-sans', className: 'font-dm-sans' }),
 }))
 
-import RootLayout from '../layout'
+import RootLayout, { dynamic } from '../layout'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -36,6 +36,10 @@ async function iconHrefs() {
 
 beforeEach(() => {
   getServerBranding.mockReset()
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
 })
 
 describe('root layout icon links', () => {
@@ -60,5 +64,21 @@ describe('root layout icon links', () => {
     expect(hrefs.icon).toBe('/logo-icon.png')
     expect(hrefs.shortcut).toBe('/logo-icon.png')
     expect(hrefs.apple).toBe('/apple-icon.png')
+  })
+})
+
+describe('root layout runtime config', () => {
+  it('renders per request, so the container environment is read at start', () => {
+    expect(dynamic).toBe('force-dynamic')
+  })
+
+  it('puts the upload concurrency on <html> for the browser to read', async () => {
+    getServerBranding.mockResolvedValue(null)
+    vi.stubEnv('UPLOAD_CONCURRENCY', '4')
+
+    const html = renderToStaticMarkup(await RootLayout({ children: null }))
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+
+    expect(doc.documentElement.getAttribute('data-ff-upload-concurrency')).toBe('4')
   })
 })

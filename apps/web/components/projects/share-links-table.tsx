@@ -3,8 +3,7 @@
 import * as React from 'react'
 import * as Switch from '@radix-ui/react-switch'
 import { Search, Folder, File, Copy, Check, Eye } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { formatRelativeTime } from '@/lib/utils'
+import { cn, copyToClipboard, formatRelativeTime } from '@/lib/utils'
 import { withBasePath } from '@/lib/base-path'
 import { ContextMenuArea } from '@/components/shared/item-menu'
 import { ShareLinkMenuItems } from './menus/share-link-menu'
@@ -41,7 +40,7 @@ export function ShareLinksTable({
     async (token: string, e: React.MouseEvent) => {
       e.stopPropagation()
       const url = `${frontendUrl}${withBasePath(`/share/${token}`)}`
-      await navigator.clipboard.writeText(url)
+      if (!(await copyToClipboard(url))) return
       setCopiedToken(token)
       setTimeout(() => setCopiedToken(null), 2000)
     },

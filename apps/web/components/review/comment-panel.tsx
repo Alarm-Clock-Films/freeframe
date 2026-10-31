@@ -28,7 +28,7 @@ import {
   Lock,
   Download,
 } from "lucide-react";
-import { cn, formatTime, formatRelativeTime } from "@/lib/utils";
+import { cn, copyToClipboard, formatTime, formatRelativeTime } from "@/lib/utils";
 import { useReviewStore } from "@/stores/review-store";
 import type { Asset } from "@/types";
 import type { CommentWithReplies } from "@/hooks/use-comments";
@@ -240,7 +240,7 @@ function CommentMenu({
               url = new URL(window.location.href)
             }
             url.searchParams.set('commentId', commentId)
-            navigator.clipboard.writeText(url.toString())
+            void copyToClipboard(url.toString())
             setOpen(false)
           }}
         >

@@ -9,6 +9,7 @@ import { createUploadQueue, usableRetryAfter, type ActiveInfo, type QueueEntry }
 import { classifyInitiateError, type InitiateOutcome } from '@/lib/upload-initiate-outcome'
 import { currentSubject, watchSubject } from '@/lib/upload-owner'
 import { onSessionEnded } from '@/lib/auth'
+import { clientUploadConcurrency } from '@/lib/runtime-config'
 import {
   assertReadable, FileUnreadableError, FILE_READ_FAILED_MESSAGE,
 } from '@/lib/upload-readable'
@@ -517,14 +518,11 @@ const ELSEWHERE_MESSAGE = 'Still uploading in another tab or on another device'
  *
  * Operator-tunable because a storage backend may throttle concurrent part PUTs
  * and there is no way for us to know which one an instance points at. Read at
- * build time like every other `NEXT_PUBLIC_*` value here, so changing it needs
- * a web image rebuild — the same upgrade path as `NEXT_PUBLIC_API_URL`.
+ * runtime: the server renders `UPLOAD_CONCURRENCY` (or the older
+ * `NEXT_PUBLIC_UPLOAD_CONCURRENCY`) onto `<html>` and this reads it from there,
+ * so changing it needs a web container restart, not an image rebuild.
  */
-const UPLOAD_CONCURRENCY = (() => {
-  const configured = Number(process.env.NEXT_PUBLIC_UPLOAD_CONCURRENCY)
-  if (!Number.isFinite(configured) || configured < 1) return 5
-  return Math.min(Math.floor(configured), 16)
-})()
+const UPLOAD_CONCURRENCY = clientUploadConcurrency()
 
 /**
  * The slots every part of every upload in this tab takes turns on. One budget,

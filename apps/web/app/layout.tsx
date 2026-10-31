@@ -10,6 +10,7 @@ import { withBasePath } from "@/lib/base-path";
 import { vercelInsightsEnabled } from "@/lib/insights";
 import { VercelInsights } from "@/components/shared/vercel-insights";
 import { logoUrlFromApi } from "@/lib/branding-logo";
+import { serverUploadConcurrency } from "@/lib/runtime-config";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -49,7 +50,11 @@ export async function generateMetadata(): Promise<Metadata> {
 // replaced them. (ISR regeneration did not save it: it serves the stale page
 // first, and a page left idle could carry logo URLs whose signatures expired.)
 // The branding fetch itself is still cached for 60s, so this costs no extra
-// round trip to the API per page view.
+// round trip to the API per page view. Rendering per request also means the
+// container's environment is read when the server starts serving, not when the
+// image was built: the published web image is one build for every install, so
+// settings such as the upload concurrency have to reach the page at runtime
+// (see lib/runtime-config.ts).
 export const dynamic = "force-dynamic";
 
 export const viewport: Viewport = {
@@ -85,6 +90,7 @@ export default async function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
+      data-ff-upload-concurrency={String(serverUploadConcurrency())}
       style={accent as React.CSSProperties | undefined}
       data-ff-server-branding={branding ? "" : undefined}
     >

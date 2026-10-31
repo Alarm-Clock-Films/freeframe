@@ -38,7 +38,7 @@ FreeFrame is a monorepo with two main applications and supporting infrastructure
 
 | Component | Role |
 |-----------|------|
-| **Traefik** | Reverse proxy, automatic SSL via Let's Encrypt, routes `/api/*` to backend and `/` to frontend |
+| **Traefik** | Reverse proxy, opt-in SSL via Let's Encrypt (`docker-compose.https.yml`), routes `/api/*` to backend and `/` to frontend |
 | **Next.js** | Server-rendered frontend, handles UI, auth cookies, client-side media playback |
 | **FastAPI** | REST API, auth, business logic, SSE events, S3 presigned URLs |
 | **PostgreSQL** | Primary datastore for all entities (users, projects, assets, comments, etc.) |

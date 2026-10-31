@@ -444,7 +444,7 @@ describe('a tab that is sending', () => {
     // stamp. With 2001 parts, the at most 96 stamps progress writes leave long
     // runs of PUTs seeing the same one.
     const PARTS = 2001
-    const POOL = 5 // UPLOAD_CONCURRENCY when the build sets none
+    const POOL = 5 // UPLOAD_CONCURRENCY when <html> carries none (jsdom's has no data attribute)
     let clock = 1_000_000
     const now = vi.spyOn(Date, 'now').mockImplementation(() => (clock += 1000))
     vi.mocked(api.post).mockImplementation((path: string) => {
