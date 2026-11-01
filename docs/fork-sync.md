@@ -8,7 +8,8 @@ sign-in code limits, branding first-paint, accent text colours, Delete forever
 in the trash, and more). Upstream keeps shipping releases. The goal is always:
 **keep all fork changes, add all upstream changes, land it through a PR.**
 
-Last done: 2026-10-25, bringing in v1.21.0 (PR Alarm-Clock-Films/freeframe#17).
+Last done: 2026-10-31, bringing in v1.22.0 (branch `claude/nice-tesla-vebkla`).
+Before that: 2026-10-25, v1.21.0 (PR Alarm-Clock-Films/freeframe#17).
 
 ## 1. Measure the gap
 
@@ -47,7 +48,8 @@ Known hotspots and how they were settled:
 | `apps/api/routers/auth.py` | Keep the fork's per-address sign-in code limit (`reserve_magic_code_send` / `clear_magic_code_sends`, counted against `user.email`) next to upstream's logic. |
 | `apps/api/tasks/celery_app.py` | `send_task_safe` must dispatch inline when `settings.running_on_vercel or settings.uses_vercel_queues`; otherwise use upstream's mechanism (currently a bounded `_dispatch_executor`). |
 | `apps/web/stores/branding-store.ts` | Keep the fork's `cached` flag, `brandingFetchedAt` and `FETCH_TIMEOUT_MS`, which drive first-paint branding. Logo URLs are stable since v1.21.0, so add no expiry. |
-| `apps/web/app/layout.tsx` | Keep the fork's Vercel Insights and noindex alongside upstream's changes. |
+| `apps/web/app/layout.tsx` | Keep the fork's Vercel Insights and noindex alongside upstream's changes. Both sides export `dynamic = "force-dynamic"`; keep one, or the build fails. |
+| `apps/web/proxy.ts` | Keep the fork's `new URL(..., request.url)` (it resolves a relative `/api`) with upstream's `API_INTERNAL_URL` and timeout. Tests reading `fetch`'s first argument compare it with `String(...)`. |
 | Any web component | Upstream's layout, with the fork's readable accent text: on `bg-accent`, use `text-accent-fg` / `text-accent-fg-inverse` / `text-accent-fg-primary` instead of `text-white` / `text-text-inverse`. |
 | A file upstream deleted that the fork edited | Accept the delete and carry the fork's edit to wherever upstream moved that code. |
 
