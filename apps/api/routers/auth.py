@@ -16,7 +16,7 @@ from ..schemas.auth import (
     PreferencesUpdate,
 )
 from ..services.auth_service import (
-    hash_password, verify_password,
+    hash_password, verify_password, check_password,
     create_access_token, create_refresh_token, decode_token,
     get_user_by_email, get_user_by_id, AUTH_METHOD_CODE,
 )
@@ -267,12 +267,13 @@ def accept_invite(body: AcceptInviteRequest, db: Session = Depends(get_db)):
 def login(body: LoginRequest, db: Session = Depends(get_db)):
     """Login with email + password."""
     user = get_user_by_email(db, body.email)
-    if (
-        not user
-        or not user.password_hash
-        or not verify_password(body.password, user.password_hash)
-        or user.status == UserStatus.deactivated
-    ):
+    # Always one bcrypt check, whether or not the address has an account with
+    # a password, so the response time does not say which.
+    if user and user.password_hash:
+        password_ok = verify_password(body.password, user.password_hash)
+    else:
+        password_ok = check_password(body.password, None)
+    if not user or not password_ok or user.status == UserStatus.deactivated:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     clear_magic_code_sends(user.email)
     return TokenResponse(

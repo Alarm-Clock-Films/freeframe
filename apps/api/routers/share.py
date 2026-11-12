@@ -1,3 +1,4 @@
+import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -89,6 +90,30 @@ def _get_project_id_from_link(db: Session, link: ShareLink) -> uuid.UUID:
             raise HTTPException(status_code=404, detail="Shared folder not found")
         return folder.project_id
     raise HTTPException(status_code=400, detail="Invalid share link")
+
+
+# A share token as secrets.token_urlsafe writes it. `share_token` on a direct
+# share is pasted into the link the notification email carries.
+_SHARE_TOKEN_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,255}")
+
+
+def _resolve_share_recipient(db: Session, body: DirectShareCreate) -> uuid.UUID:
+    """The user a direct share is for, from `user_id` or `email`.
+
+    Call it only after the caller's role on the project is checked. Looked up
+    first, its 404 told any signed-in user whether an address has an account.
+    """
+    if body.share_token is not None and not _SHARE_TOKEN_SHAPE.fullmatch(body.share_token):
+        raise HTTPException(status_code=400, detail="Invalid share_token")
+    if body.user_id:
+        return body.user_id
+    if body.email:
+        from ..services.auth_service import get_user_by_email
+        user = get_user_by_email(db, body.email)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found with that email")
+        return user.id
+    raise HTTPException(status_code=400, detail="user_id or email required")
 
 
 def _log_share_activity(
@@ -634,11 +659,15 @@ def verify_share_link_password(
     )
 
 
-def _share_link_response(link: ShareLink) -> ShareLinkResponse:
-    """Build ShareLinkResponse from ORM model, computing has_password and decrypting password."""
+def _share_link_response(link: ShareLink, reveal_password: bool = True) -> ShareLinkResponse:
+    """Build ShareLinkResponse from ORM model, computing has_password and decrypting password.
+
+    `reveal_password=False` leaves the password itself out: for a caller who
+    may see the link's settings but not change them.
+    """
     response = ShareLinkResponse.model_validate(link)
     response.has_password = link.password_hash is not None and link.password_hash != ''
-    if link.password_encrypted:
+    if link.password_encrypted and reveal_password:
         try:
             response.password_value = decrypt_password(link.password_encrypted)
         except Exception:
@@ -662,8 +691,11 @@ def get_share_link_details(
     if not link:
         raise HTTPException(status_code=404, detail="Share link not found")
     project_id = _get_project_id_from_link(db, link)
-    require_project_role(db, project_id, current_user, ProjectRole.viewer)
-    return _share_link_response(link)
+    member = require_project_role(db, project_id, current_user, ProjectRole.viewer)
+    # The password is shown to those who can set it (editor and up, as PATCH
+    # requires). A viewer or reviewer sees that one is set, not what it is.
+    can_edit = member.role in (ProjectRole.owner, ProjectRole.editor)
+    return _share_link_response(link, reveal_password=can_edit)
 
 
 # ── PATCH share link ─────────────────────────────────────────────────────────
@@ -819,21 +851,11 @@ def share_project_with_user(
     current_user: User = Depends(get_current_user),
 ):
     """Share entire project with a user by email or user_id. Sends notification email."""
-    user_id = body.user_id
-    if not user_id and body.email:
-        from ..services.auth_service import get_user_by_email
-        user = get_user_by_email(db, body.email)
-        if user:
-            user_id = user.id
-        else:
-            raise HTTPException(status_code=404, detail="User not found with that email")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id or email required")
-
     project = db.query(Project).filter(Project.id == project_id, Project.deleted_at.is_(None)).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     require_project_role(db, project_id, current_user, ProjectRole.editor)
+    user_id = _resolve_share_recipient(db, body)
 
     # For project shares, we store as an AssetShare with project_id context
     # Use the first root folder or create a project-level share
@@ -887,20 +909,9 @@ def share_folder_with_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Resolve user_id from email if not provided
-    user_id = body.user_id
-    if not user_id and body.email:
-        from ..services.auth_service import get_user_by_email
-        user = get_user_by_email(db, body.email)
-        if user:
-            user_id = user.id
-        else:
-            raise HTTPException(status_code=404, detail="User not found with that email")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id or email required")
-
     folder = _get_folder(db, folder_id)
     require_project_role(db, folder.project_id, current_user, ProjectRole.editor)
+    user_id = _resolve_share_recipient(db, body)
 
     # Upsert: reactivate if soft-deleted
     existing = db.query(AssetShare).filter(
@@ -1050,20 +1061,9 @@ def share_with_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Resolve user_id from email if not provided
-    user_id = body.user_id
-    if not user_id and body.email:
-        from ..services.auth_service import get_user_by_email
-        user = get_user_by_email(db, body.email)
-        if user:
-            user_id = user.id
-        else:
-            raise HTTPException(status_code=404, detail="User not found with that email")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id or email required")
-
     asset = _get_asset(db, asset_id)
     require_project_role(db, asset.project_id, current_user, ProjectRole.editor)
+    user_id = _resolve_share_recipient(db, body)
 
     # Upsert: reactivate if soft-deleted
     existing = db.query(AssetShare).filter(

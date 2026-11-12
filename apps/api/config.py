@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # 250 on Vercel, which ends a function at its maximum duration (300 s by
     # default) and would otherwise cut the stream mid-write.
     sse_max_stream_seconds: float | None = Field(None, ge=0)
+    # Size limits on what a comment may carry. They apply to everyone and
+    # matter most for guests, who comment through a share link without
+    # signing in: before these, one request could store megabytes of text or
+    # drawing data. A comment's text is counted in characters; its drawing
+    # (the annotation JSON) and a comment attachment's declared size in bytes.
+    comment_max_chars: int = Field(20_000, ge=1)
+    annotation_max_bytes: int = Field(1_000_000, ge=1)
+    comment_attachment_max_bytes: int = Field(100 * 1024 * 1024, ge=1)
+    # Comments one address may post through share links per minute. 0 = no limit.
+    guest_comments_per_minute: int = Field(20, ge=0)
     frontend_url: str = "http://localhost:3000"
     # Extra browser origins allowed by CORS, comma-separated (in addition to the
     # frontend + localhost defaults). Set to "*" to allow any origin — handy for

@@ -461,6 +461,8 @@ If FreeFrame sits behind another proxy that already handles SSL:
 4. For **Cloudflare**: set SSL mode to "Full"
 5. Set `FRONTEND_URL` in `.env.prod` to your `https://` URL
 
+**Rate limits and the visitor's address.** Sign-in, share-link passwords and guest comments are limited per address, and the API takes that address from `X-Real-IP`. The bundled Traefik sets it to whoever connected to it, which behind another proxy is that proxy, so every visitor shares one address and one person's failed sign-ins lock everyone out (10 password attempts per 10 minutes). Tell Traefik which proxy to trust so it passes the real address through: add `--entrypoints.web.forwardedHeaders.trustedIPs=<your proxy's address or range>` to the `traefik` service's `command` in `docker-compose.prod.yml` (for Cloudflare, [its published ranges](https://www.cloudflare.com/ips/)), and make sure the proxy sends `X-Real-IP`. Never trust all addresses: anyone could then send the header themselves and choose the address they are limited as.
+
 ### Sub-path Deployments
 
 To serve FreeFrame under a path instead of the domain root — `https://example.com/freeframe/` — set the base path and rebuild the web image:
@@ -706,6 +708,10 @@ All environment variables are documented in [`.env.example`](../.env.example). K
 | `DOMAIN` | Your domain; required with `docker-compose.https.yml`, which requests the certificate | (optional) |
 | `ACME_EMAIL` | Email for Let's Encrypt notifications; required with `docker-compose.https.yml` | (optional) |
 | `MAIL_PROVIDER` | `smtp` or `ses` | `smtp` |
+| `COMMENT_MAX_CHARS` | Longest comment, in characters | `20000` |
+| `ANNOTATION_MAX_BYTES` | Largest drawing on one annotation, in bytes of its JSON | `1000000` |
+| `COMMENT_ATTACHMENT_MAX_BYTES` | Largest comment attachment a client may declare | `104857600` (100 MB) |
+| `GUEST_COMMENTS_PER_MINUTE` | Comments one address may post through share links per minute; `0` = no limit | `20` |
 | `API_WORKERS` | Gunicorn worker processes | `4` |
 | `TRANSCODING_CONCURRENCY` | Parallel transcoding jobs | `2` |
 | `EMAIL_CONCURRENCY` | Parallel email jobs | `2` |
