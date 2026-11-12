@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
-from sqlalchemy import String, Enum, DateTime, JSON, func, Integer
+from sqlalchemy import String, Enum, DateTime, Index, JSON, func, Integer, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 try:
@@ -18,6 +18,8 @@ class UserStatus(str, PyEnum):
 
 class User(Base):
     __tablename__ = "users"
+    # Sign-in and invites match addresses case-insensitively (auth_service).
+    __table_args__ = (Index("ix_users_email_lower", text("lower(email)")),)
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)

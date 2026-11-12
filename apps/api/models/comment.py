@@ -38,7 +38,7 @@ class Comment(Base):
 class Annotation(Base):
     __tablename__ = "annotations"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    comment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("comments.id"), nullable=False)
+    comment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("comments.id"), nullable=False, index=True)
     drawing_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
     frame_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     carousel_position: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -46,7 +46,7 @@ class Annotation(Base):
 class CommentAttachment(Base):
     __tablename__ = "comment_attachments"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    comment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("comments.id"), nullable=False)
+    comment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("comments.id"), nullable=False, index=True)
     file_type: Mapped[str] = mapped_column(String(50), nullable=False)
     s3_key: Mapped[str] = mapped_column(String(1000), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
