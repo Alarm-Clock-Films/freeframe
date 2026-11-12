@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from typing import Optional
 import uuid
 import jwt
@@ -33,6 +34,29 @@ def verify_password(plain: str, hashed: str) -> bool:
         return bcrypt.checkpw(bcrypt_password_bytes(plain), hashed_bytes)
     except ValueError:
         return False
+
+
+@lru_cache(maxsize=1)
+def _decoy_hash() -> bytes:
+    return bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt())
+
+
+def check_password(plain: str, hashed: Optional[str]) -> bool:
+    """verify_password, taking as long when there is no hash to check.
+
+    Password login answers "Invalid credentials" for an unknown address and
+    for a wrong password alike, but it only ran bcrypt for an account that had
+    a password, so the time the answer took gave away which addresses did. An
+    account with no password is checked against a throwaway hash instead.
+    """
+    if hashed:
+        return verify_password(plain, hashed)
+    try:
+        bcrypt.checkpw(bcrypt_password_bytes(plain), _decoy_hash())
+    except ValueError:
+        pass
+    return False
+
 
 # `amr` value on an access token issued for a sign-in code: its holder proved,
 # within the token's lifetime, that they can read the account's mailbox.

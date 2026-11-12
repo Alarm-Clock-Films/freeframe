@@ -10,13 +10,14 @@ from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
 from ..middleware.auth import get_current_user, get_optional_user
 from ..middleware.share_auth import get_share_link
+from ..middleware.rate_limit import rate_limit
 from ..services import event_service
 from ..models.asset import Asset, AssetType, AssetVersion, MediaFile, ProcessingStatus
 from ..models.project import ProjectMember, ProjectRole
@@ -1120,7 +1121,19 @@ def list_share_comments(
     return _build_comment_responses_batched(asset_id, top_level, db, exclude_internal=True)
 
 
-@router.post("/share/{token}/comment", response_model=CommentResponse, status_code=status.HTTP_201_CREATED)
+def _guest_comment_limit(request: Request) -> None:
+    """Per-address limit on comments posted through share links. They need no
+    sign-in, and the only limit on them was the global one (300 writes a minute)."""
+    if settings.guest_comments_per_minute > 0:
+        rate_limit("guest_comment", settings.guest_comments_per_minute, 60)(request)
+
+
+@router.post(
+    "/share/{token}/comment",
+    response_model=CommentResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_guest_comment_limit)],
+)
 def guest_comment(
     token: str,
     body: GuestCommentCreate,
