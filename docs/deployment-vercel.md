@@ -73,7 +73,7 @@ limiting; it is no longer the Celery broker on Vercel.
 
 ## 2. Build and push the transcoding image
 
-Transcoding needs FFmpeg and ImageMagick and can run for hours, which a Vercel
+Transcoding needs FFmpeg and can run for hours, which a Vercel
 Function cannot do. With `TRANSCODE_RUNNER=vercel_sandbox`, the queue worker
 starts a Vercel Sandbox from this image and runs the same task inside it.
 

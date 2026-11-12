@@ -174,8 +174,8 @@ class Settings(BaseSettings):
     #                     a few minutes. See docs/deployment-vercel.md.
     transcode_runner: str = "inline"
     # Container image the sandbox boots: apps/api/Dockerfile.prod pushed to
-    # the Vercel Container Registry. It carries FFmpeg, ImageMagick and this
-    # code, so it must be rebuilt when the code changes.
+    # the Vercel Container Registry. It carries FFmpeg and this code, so it
+    # must be rebuilt when the code changes.
     vercel_sandbox_image: str | None = None
     # Where the code lives inside that image (WORKDIR of Dockerfile.prod).
     vercel_sandbox_workdir: str = "/workspace"

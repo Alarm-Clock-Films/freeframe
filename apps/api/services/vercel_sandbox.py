@@ -1,10 +1,10 @@
 """Run transcoding work in a Vercel Sandbox (TRANSCODE_RUNNER=vercel_sandbox).
 
-A Vercel Function has no FFmpeg or ImageMagick and runs for at most a few
-minutes, while a transcode needs both and can take hours. With this runner the
+A Vercel Function has no FFmpeg and runs for at most a few minutes, while a
+transcode needs FFmpeg and can take hours. With this runner the
 Celery task that Vercel Queues delivers does not do the work itself. It starts
 a sandbox from the image built from apps/api/Dockerfile.prod (which carries
-FFmpeg, ImageMagick and this code) and runs the same task there with
+FFmpeg and this code) and runs the same task there with
 `python -m apps.api.tasks.sandbox_runner`.
 
 The worker waits for the sandbox for as long as its own invocation allows and
