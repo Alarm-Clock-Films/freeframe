@@ -1,5 +1,6 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import uuid
 import secrets
@@ -17,7 +18,7 @@ from ..schemas.auth import (
 from ..services.auth_service import (
     hash_password, verify_password,
     create_access_token, create_refresh_token, decode_token,
-    get_user_by_email, get_user_by_id,
+    get_user_by_email, get_user_by_id, AUTH_METHOD_CODE,
 )
 from ..services.redis_service import (
     generate_magic_code, store_magic_code, verify_magic_code as redis_verify_magic_code,
@@ -27,7 +28,7 @@ from ..tasks.email_tasks import send_magic_code_email, send_invite_email
 from ..tasks.celery_app import send_task_safe
 from ..models.user import User, UserStatus
 from ..models.instance_branding import InstanceBranding
-from ..middleware.auth import get_current_user
+from ..middleware.auth import bearer_scheme, get_current_user
 from ..middleware.rate_limit import rate_limit
 from ..services.botid import require_human
 
@@ -157,7 +158,11 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
     needs_password = user.password_hash is None
     
     return TokenResponse(
-        access_token=create_access_token(str(user.id), token_version=user.token_version),
+        # Marked as a code sign-in: /auth/set-password accepts only such a
+        # token when the account already has a password.
+        access_token=create_access_token(
+            str(user.id), token_version=user.token_version, auth_method=AUTH_METHOD_CODE,
+        ),
         refresh_token=create_refresh_token(str(user.id), token_version=user.token_version),
         needs_password=needs_password,
     )
@@ -167,10 +172,35 @@ def verify_magic_code(body: VerifyMagicCodeRequest, db: Session = Depends(get_db
 def set_password(
     body: SetPasswordRequest,
     current_user: User = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ):
-    """Set password for authenticated user (after magic code verification)."""
+    """Set a password without giving the current one.
+
+    For an account that has none yet (first sign-in by code). An account that
+    already has a password can replace it here only with the access token a
+    sign-in code just returned, which is how a forgotten password is reset:
+    the caller has shown they read the account's mailbox within the last few
+    minutes. Any other token must use /auth/change-password, which asks for
+    the current password. Without that rule, whoever got hold of an access
+    token for a moment could set a password of their own and keep the account.
+    """
+    replacing = current_user.password_hash is not None
+    if replacing:
+        payload = decode_token(credentials.credentials) or {}
+        if payload.get("amr") != AUTH_METHOD_CODE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "This account already has a password. Change it with your current "
+                    "password, or sign in with an emailed code to reset it."
+                ),
+            )
     current_user.password_hash = hash_password(body.password)
+    if replacing:
+        # As /auth/change-password does: every session signed before the reset
+        # ends, this one included, so the caller signs in with the new password.
+        current_user.token_version += 1
     db.commit()
     db.refresh(current_user)
     return current_user

@@ -34,9 +34,16 @@ def verify_password(plain: str, hashed: str) -> bool:
     except ValueError:
         return False
 
-def create_access_token(user_id: str, token_version: int = 1) -> str:
+# `amr` value on an access token issued for a sign-in code: its holder proved,
+# within the token's lifetime, that they can read the account's mailbox.
+AUTH_METHOD_CODE = "code"
+
+
+def create_access_token(user_id: str, token_version: int = 1, auth_method: Optional[str] = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {"sub": str(user_id), "type": "access", "exp": expire, "ver":token_version}
+    if auth_method:
+        payload["amr"] = auth_method
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 def create_refresh_token(user_id: str, token_version: int = 1) -> str:

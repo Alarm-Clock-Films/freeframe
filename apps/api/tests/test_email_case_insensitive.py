@@ -59,11 +59,34 @@ class FakeRedis:
     def delete(self, key):
         self.data.pop(key, None)
 
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.data:
+            return None
+        self.data[key] = str(value)
+        return True
+
     def incr(self, key):
         self.data[key] = str(int(self.data.get(key, 0)) + 1)
+        return int(self.data[key])
 
     def expire(self, key, ttl):
         pass
+
+    def pipeline(self, transaction=True):
+        return _FakePipeline(self)
+
+
+class _FakePipeline:
+    def __init__(self, r):
+        self.r, self.ops = r, []
+
+    def __getattr__(self, name):
+        def queue(*args, **kwargs):
+            self.ops.append(lambda: getattr(self.r, name)(*args, **kwargs))
+        return queue
+
+    def execute(self):
+        return [op() for op in self.ops]
 
 
 @pytest.fixture

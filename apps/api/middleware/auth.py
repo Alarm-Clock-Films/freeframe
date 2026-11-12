@@ -10,6 +10,17 @@ from ..models.user import User, UserStatus
 bearer_scheme = HTTPBearer()
 optional_bearer_scheme = HTTPBearer(auto_error=False)
 
+
+def token_is_current(payload: dict, user: User) -> bool:
+    """Whether a token was minted at the user's current token_version.
+
+    The version is bumped when a password changes and when an account is
+    deactivated, which ends every session signed before that. A token from
+    before the claim existed counts as version 1, as /auth/refresh treats it.
+    """
+    return payload.get("ver", 1) == user.token_version
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
@@ -21,6 +32,10 @@ def get_current_user(
     user = get_user_by_id(db, uuid.UUID(payload["sub"]))
     if not user or user.status == UserStatus.deactivated:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or deactivated")
+    # Checked here, not only on refresh: without it an access token signed
+    # before a password change kept working until it expired.
+    if not token_is_current(payload, user):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
     return user
 
 def get_optional_user(
@@ -36,6 +51,8 @@ def get_optional_user(
             return None
         user = get_user_by_id(db, uuid.UUID(payload["sub"]))
         if not user or user.status == UserStatus.deactivated:
+            return None
+        if not token_is_current(payload, user):
             return None
         return user
     except Exception:

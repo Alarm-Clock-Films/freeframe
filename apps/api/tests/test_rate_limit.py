@@ -9,8 +9,8 @@ class TestCheckRateLimit:
     @patch("apps.api.services.redis_service.get_redis")
     def test_allows_request_under_limit(self, mock_get_redis):
         mock_redis = MagicMock()
-        mock_redis.get.return_value = None
         mock_pipe = MagicMock()
+        mock_pipe.execute.return_value = [True, 1]
         mock_redis.pipeline.return_value = mock_pipe
         mock_get_redis.return_value = mock_redis
 
@@ -20,6 +20,9 @@ class TestCheckRateLimit:
 
         assert allowed is True
         assert retry_after == 0
+        # Counted and judged on that one answer: no separate read of the
+        # counter that requests sent together could all pass on.
+        mock_redis.get.assert_not_called()
         # The counter gets its window with SET NX EX, then INCR, in one
         # transaction: plain commands, so it works on any Redis (Upstash too).
         mock_pipe.set.assert_called_once_with("rl:test_action:127.0.0.1", 0, nx=True, ex=60)
@@ -29,8 +32,11 @@ class TestCheckRateLimit:
 
     @patch("apps.api.services.redis_service.get_redis")
     def test_blocks_request_at_limit(self, mock_get_redis):
+        # The sixth request in a window of five: its own count is over the limit.
         mock_redis = MagicMock()
-        mock_redis.get.return_value = "5"
+        mock_pipe = MagicMock()
+        mock_pipe.execute.return_value = [None, 6]
+        mock_redis.pipeline.return_value = mock_pipe
         mock_redis.ttl.return_value = 42
         mock_get_redis.return_value = mock_redis
 
@@ -43,9 +49,10 @@ class TestCheckRateLimit:
 
     @patch("apps.api.services.redis_service.get_redis")
     def test_allows_request_below_limit(self, mock_get_redis):
+        # The fifth request in a window of five is the last one allowed.
         mock_redis = MagicMock()
-        mock_redis.get.return_value = "3"
         mock_pipe = MagicMock()
+        mock_pipe.execute.return_value = [None, 5]
         mock_redis.pipeline.return_value = mock_pipe
         mock_get_redis.return_value = mock_redis
 
@@ -59,7 +66,9 @@ class TestCheckRateLimit:
     @patch("apps.api.services.redis_service.get_redis")
     def test_retry_after_minimum_is_one(self, mock_get_redis):
         mock_redis = MagicMock()
-        mock_redis.get.return_value = "10"
+        mock_pipe = MagicMock()
+        mock_pipe.execute.return_value = [None, 11]
+        mock_redis.pipeline.return_value = mock_pipe
         mock_redis.ttl.return_value = -1
         mock_get_redis.return_value = mock_redis
 
@@ -163,8 +172,8 @@ class TestGlobalRateLimitMiddleware:
         from apps.api.middleware.global_rate_limit import GlobalRateLimitMiddleware
 
         mock_redis = MagicMock()
-        mock_redis.get.return_value = None
         mock_pipe = MagicMock()
+        mock_pipe.execute.return_value = [None, 600]
         mock_redis.pipeline.return_value = mock_pipe
         mock_get_redis.return_value = mock_redis
 
@@ -179,7 +188,9 @@ class TestGlobalRateLimitMiddleware:
         from apps.api.middleware.global_rate_limit import GlobalRateLimitMiddleware
 
         mock_redis = MagicMock()
-        mock_redis.get.return_value = "600"
+        mock_pipe = MagicMock()
+        mock_pipe.execute.return_value = [None, 601]
+        mock_redis.pipeline.return_value = mock_pipe
         mock_redis.ttl.return_value = 25
         mock_get_redis.return_value = mock_redis
 

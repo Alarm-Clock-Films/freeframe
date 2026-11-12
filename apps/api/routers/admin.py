@@ -61,6 +61,10 @@ def deactivate_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     user.status = UserStatus.deactivated
+    # End the sessions they had. A deactivated account is refused on every
+    # request already; this keeps a refresh token issued before the
+    # deactivation from working again if the account is reactivated.
+    user.token_version += 1
     # Deactivating a pending invitee withdraws the invite, so a later
     # Reactivate doesn't bring the old link back to life.
     user.invite_token = None

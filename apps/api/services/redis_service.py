@@ -1,3 +1,4 @@
+import hmac
 import redis
 import secrets
 from typing import Optional
@@ -46,27 +47,28 @@ def verify_magic_code(key: str, code: str) -> tuple[bool, str]:
     """
     Verify magic code from Redis.
     Returns (success, error_message).
+
+    The attempt is counted before the code is compared, in one atomic step.
+    Reading the count first and adding to it only after a wrong guess let
+    requests sent together all read a count under the cap, so a burst got
+    many more than MAX_MAGIC_CODE_ATTEMPTS guesses at one code.
     """
     r = get_redis()
     code_key = f"{MAGIC_CODE_PREFIX}{key.lower()}"
     attempts_key = f"{MAGIC_CODE_ATTEMPTS_PREFIX}{key.lower()}"
-    
-    # Check attempts
-    attempts = r.get(attempts_key)
-    if attempts and int(attempts) >= MAX_MAGIC_CODE_ATTEMPTS:
+
+    attempts = count_in_window(r, attempts_key, MAGIC_CODE_EXPIRY_SECONDS)
+    if attempts > MAX_MAGIC_CODE_ATTEMPTS:
         return False, "Too many attempts. Request a new code."
-    
+
     # Get stored code
     stored_code = r.get(code_key)
     if not stored_code:
         return False, "Code expired or not found"
-    
-    if stored_code != code:
-        # Increment attempts
-        r.incr(attempts_key)
-        r.expire(attempts_key, MAGIC_CODE_EXPIRY_SECONDS)
+
+    if not hmac.compare_digest(str(stored_code).encode(), code.encode()):
         return False, "Invalid code"
-    
+
     # Success - delete the code
     r.delete(code_key)
     r.delete(attempts_key)
@@ -142,13 +144,10 @@ def check_rate_limit(
     try:
         r = get_redis()
         key = f"{RATE_LIMIT_PREFIX}{action}:{ip}"
-        current = r.get(key)
-
-        if current is not None and int(current) >= max_requests:
-            ttl = r.ttl(key)
-            return False, max(ttl, 1)
-
-        count_in_window(r, key, window_seconds)
+        # Count first, then compare. Reading the count and adding to it
+        # afterwards let requests sent together all pass on the same reading.
+        if count_in_window(r, key, window_seconds) > max_requests:
+            return False, max(r.ttl(key), 1)
         return True, 0
     except Exception:
         # Fail open — allow the request if Redis is unavailable
