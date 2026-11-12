@@ -164,3 +164,32 @@ def _forget_display_urls():
     yield
     s3_service._display_url_local.clear()
 
+
+class AsyncRedisOver:
+    """The asyncio face of a synchronous fake Redis, for the global rate
+    limiter: commands queue on a pipeline as usual and `execute` is awaited."""
+
+    def __init__(self, sync_redis):
+        self.sync_redis = sync_redis
+
+    def pipeline(self, transaction=True):
+        return _AsyncPipelineOver(self.sync_redis.pipeline(transaction=transaction))
+
+
+class _AsyncPipelineOver:
+    def __init__(self, pipe):
+        self._pipe = pipe
+
+    def __getattr__(self, name):
+        return getattr(self._pipe, name)
+
+    async def execute(self):
+        return self._pipe.execute()
+
+
+def global_limit_answers(allowed: bool, retry_after: int = 0):
+    """A stand-in for GlobalRateLimitMiddleware._check, which is a coroutine."""
+    async def _check(self, *args):
+        return (allowed, retry_after)
+    return _check
+

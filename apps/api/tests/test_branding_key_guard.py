@@ -75,7 +75,8 @@ def api(real_db, s3, monkeypatch):
     from apps.api.middleware import rate_limit
     from apps.api.middleware.global_rate_limit import GlobalRateLimitMiddleware
 
-    monkeypatch.setattr(GlobalRateLimitMiddleware, "_check", lambda self, *a: (True, 0))
+    from .conftest import global_limit_answers
+    monkeypatch.setattr(GlobalRateLimitMiddleware, "_check", global_limit_answers(True))
     monkeypatch.setattr(rate_limit, "check_rate_limit", lambda *a, **k: (True, 0))
 
     who = {"user": None}
