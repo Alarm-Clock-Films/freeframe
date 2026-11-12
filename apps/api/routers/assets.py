@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, literal, select
+from sqlalchemy import exists, func, literal, or_, select
 import os
 import uuid
 from datetime import datetime, timezone
@@ -213,14 +213,30 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session) -> list[AssetR
     return result
 
 
+# The most assets one page of GET /projects/{id}/assets may ask for.
+ASSET_LIST_MAX_LIMIT = 500
+
+
 @router.get("/projects/{project_id}/assets", response_model=list[AssetResponse])
 def list_assets(
     project_id: uuid.UUID,
     include_failed: bool = Query(False, description="Include assets whose latest version failed processing"),
     folder_id: Optional[str] = Query(None, description="Filter by folder. 'root' for root level, UUID for specific folder."),
+    skip: int = Query(0, ge=0, description="Assets to skip, newest first"),
+    limit: Optional[int] = Query(
+        None, ge=1, le=ASSET_LIST_MAX_LIMIT,
+        description="Most assets to return. Omitted: all of them, as before.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """A project's assets, newest first.
+
+    Everything in the folder (or the project) when `limit` is omitted, which is
+    what the project grid loads and sorts itself. A caller that needs only a
+    few, such as a folder card's preview, passes `limit` and gets only those
+    built and signed.
+    """
     # Allow access if user is a project member OR the project is public
     require_project_visible(db, project_id, current_user)
 
@@ -234,30 +250,29 @@ def list_assets(
     elif folder_id is not None:
         query = query.filter(Asset.folder_id == uuid.UUID(folder_id))
 
-    assets = query.all()
-
     if not include_failed:
-        # Exclude assets where the only version is failed or still uploading
-        asset_ids = [a.id for a in assets]
-        if asset_ids:
-            # Find assets that have at least one non-failed, non-uploading version
-            usable = set(
-                row[0] for row in db.query(AssetVersion.asset_id).filter(
-                    AssetVersion.asset_id.in_(asset_ids),
-                    AssetVersion.deleted_at.is_(None),
-                    AssetVersion.processing_status.notin_([ProcessingStatus.failed, ProcessingStatus.uploading]),
-                ).distinct().all()
-            )
-            # Also include assets with no versions yet (just created)
-            has_any_version = set(
-                row[0] for row in db.query(AssetVersion.asset_id).filter(
-                    AssetVersion.asset_id.in_(asset_ids),
-                    AssetVersion.deleted_at.is_(None),
-                ).distinct().all()
-            )
-            assets = [a for a in assets if a.id in usable or a.id not in has_any_version]
+        # Leave out assets whose every version is failed or still uploading,
+        # but keep assets with no versions yet (just created). In the query,
+        # not after it: a page has to be cut from the assets that are listed.
+        live_version = exists().where(
+            AssetVersion.asset_id == Asset.id,
+            AssetVersion.deleted_at.is_(None),
+        )
+        usable_version = exists().where(
+            AssetVersion.asset_id == Asset.id,
+            AssetVersion.deleted_at.is_(None),
+            AssetVersion.processing_status.notin_([ProcessingStatus.failed, ProcessingStatus.uploading]),
+        )
+        query = query.filter(or_(usable_version, ~live_version))
 
-    return _build_asset_responses_bulk(assets, db)
+    # A fixed order, so pages do not overlap or skip.
+    query = query.order_by(Asset.created_at.desc(), Asset.id)
+    if skip:
+        query = query.offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+
+    return _build_asset_responses_bulk(query.all(), db)
 
 
 # Declared before `/assets/{asset_id}`: routes match in order, and after it
