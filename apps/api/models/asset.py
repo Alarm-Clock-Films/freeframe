@@ -91,7 +91,9 @@ class MediaFile(Base):
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    s3_key_raw: Mapped[str] = mapped_column(String(1000), nullable=False)
+    # Looked up by key on every /upload/presign-part. The index has been in the
+    # database since an early migration; declared here so autogenerate keeps it.
+    s3_key_raw: Mapped[str] = mapped_column(String(1000), nullable=False, index=True)
     s3_key_processed: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     # The single downloadable file for a video: one MP4 remuxed from the top HLS
     # rung. NULL for every version transcoded before this existed, for any
