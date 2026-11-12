@@ -144,52 +144,213 @@ def _get_latest_media_file(db: Session, asset_id: uuid.UUID) -> Optional[MediaFi
 
 
 def _latest_version_comment_count(db: Session, asset_id: uuid.UUID) -> int:
-    """Count public comments rendered in the asset's share-grid preview."""
-    version = db.query(AssetVersion).filter(
-        AssetVersion.asset_id == asset_id,
-        AssetVersion.deleted_at.is_(None),
-        AssetVersion.processing_status == ProcessingStatus.ready,
-    ).order_by(AssetVersion.version_number.desc()).first()
+    """Count public comments rendered in the asset's share-grid preview.
+
+    Matches list_share_comments: a visible parent is required to reach a reply,
+    and the response builder stops at COMMENT_TREE_MAX_DEPTH. The listing counts
+    a whole page at once with _public_comment_counts; this is the same count
+    for one asset.
+    """
+    version = _latest_ready_versions(db, [asset_id]).get(asset_id)
     if not version:
         return 0
+    return _public_comment_counts(db, [version.id]).get(version.id, 0)
 
-    # Match list_share_comments: a visible parent is required to reach a reply,
-    # and the response builder stops at COMMENT_TREE_MAX_DEPTH.
-    comment_tree = sqlalchemy.select(
+
+# ── Share listing, in bulk ───────────────────────────────────────────────────
+# GET /share/{token}/assets needs no sign-in and used to run about six queries
+# per asset and eleven per subfolder. Everything below is one query per kind of
+# data for the whole page, whatever its size.
+
+SHARE_FOLDER_PREVIEW_THUMBNAILS = 4
+# The largest page a share listing returns. The share page's download-all walk
+# asks for 500; an unbounded value let one anonymous request ask for everything.
+SHARE_MAX_PER_PAGE = 500
+
+
+def _latest_ready_versions(db: Session, asset_ids: list) -> dict:
+    """The newest ready version of each asset, by asset id (as _get_latest_media_file picks)."""
+    if not asset_ids:
+        return {}
+    newest = (
+        db.query(
+            AssetVersion.asset_id.label("asset_id"),
+            sa_func.max(AssetVersion.version_number).label("number"),
+        )
+        .filter(
+            AssetVersion.asset_id.in_(asset_ids),
+            AssetVersion.deleted_at.is_(None),
+            AssetVersion.processing_status == ProcessingStatus.ready,
+        )
+        .group_by(AssetVersion.asset_id)
+        .subquery()
+    )
+    rows = (
+        db.query(AssetVersion)
+        .join(newest, sqlalchemy.and_(
+            AssetVersion.asset_id == newest.c.asset_id,
+            AssetVersion.version_number == newest.c.number,
+        ))
+        .filter(
+            AssetVersion.deleted_at.is_(None),
+            AssetVersion.processing_status == ProcessingStatus.ready,
+        )
+        .all()
+    )
+    return {v.asset_id: v for v in rows}
+
+
+def _first_media_files(db: Session, version_ids: list) -> dict:
+    """One media file per version, by version id."""
+    if not version_ids:
+        return {}
+    files: dict = {}
+    for f in db.query(MediaFile).filter(MediaFile.version_id.in_(version_ids)).order_by(MediaFile.id).all():
+        files.setdefault(f.version_id, f)
+    return files
+
+
+def _public_comment_counts(db: Session, version_ids: list) -> dict:
+    """_latest_version_comment_count for many versions at once, by version id."""
+    if not version_ids:
+        return {}
+    tree = sqlalchemy.select(
         Comment.id.label("id"),
-        Comment.parent_id.label("parent_id"),
+        Comment.version_id.label("version_id"),
         sqlalchemy.literal(0).label("depth"),
     ).where(
-        Comment.asset_id == asset_id,
-        Comment.version_id == version.id,
+        Comment.version_id.in_(version_ids),
         Comment.parent_id.is_(None),
         Comment.deleted_at.is_(None),
         Comment.visibility != "internal",
     ).cte(name="visible_share_comments", recursive=True)
-    visible_replies = sqlalchemy.select(
-        Comment.id.label("id"),
-        Comment.parent_id.label("parent_id"),
-        (comment_tree.c.depth + 1).label("depth"),
-    ).join(
-        comment_tree,
-        Comment.parent_id == comment_tree.c.id,
-    ).where(
-        Comment.asset_id == asset_id,
-        Comment.version_id == version.id,
+    replies = sqlalchemy.select(
+        Comment.id,
+        tree.c.version_id,
+        (tree.c.depth + 1),
+    ).join(tree, Comment.parent_id == tree.c.id).where(
+        # A reply is counted on its parent's version, and only if it is filed
+        # on that version itself, as the one-asset count requires.
+        Comment.version_id == tree.c.version_id,
         Comment.deleted_at.is_(None),
         Comment.visibility != "internal",
-        comment_tree.c.depth < COMMENT_TREE_MAX_DEPTH,
+        tree.c.depth < COMMENT_TREE_MAX_DEPTH,
     )
-    comment_tree = comment_tree.union_all(visible_replies)
-    return db.query(sa_func.count(comment_tree.c.id)).select_from(comment_tree).scalar() or 0
+    tree = tree.union_all(replies)
+    rows = db.query(tree.c.version_id, sa_func.count(tree.c.id)).group_by(tree.c.version_id).all()
+    return {version_id: count for version_id, count in rows}
 
-def _ready_version_count(db: Session, asset_id: uuid.UUID) -> int:
-    """Number of ready versions available for an asset (shown on the share preview card)."""
-    return db.query(sa_func.count(AssetVersion.id)).filter(
-        AssetVersion.asset_id == asset_id,
-        AssetVersion.deleted_at.is_(None),
-        AssetVersion.processing_status == ProcessingStatus.ready,
-    ).scalar() or 0
+
+def _ready_version_counts(db: Session, asset_ids: list) -> dict:
+    """How many ready versions each asset has (shown on the share preview card), by asset id."""
+    if not asset_ids:
+        return {}
+    rows = (
+        db.query(AssetVersion.asset_id, sa_func.count(AssetVersion.id))
+        .filter(
+            AssetVersion.asset_id.in_(asset_ids),
+            AssetVersion.deleted_at.is_(None),
+            AssetVersion.processing_status == ProcessingStatus.ready,
+        )
+        .group_by(AssetVersion.asset_id)
+        .all()
+    )
+    return {asset_id: count for asset_id, count in rows}
+
+
+def _share_asset_items(
+    db: Session, link: ShareLink, assets: list, *, with_creator: bool,
+) -> list[FolderShareAssetItem]:
+    """The cards for a page of shared assets, in the order given."""
+    asset_ids = [a.id for a in assets]
+    versions = _latest_ready_versions(db, asset_ids)
+    files = _first_media_files(db, [v.id for v in versions.values()])
+    comment_counts = _public_comment_counts(db, [v.id for v in versions.values()])
+    version_counts = _ready_version_counts(db, asset_ids) if link.show_versions else {}
+    creator_names: dict = {}
+    if with_creator:
+        creator_ids = {a.created_by for a in assets if a.created_by}
+        if creator_ids:
+            creator_names = dict(db.query(User.id, User.name).filter(User.id.in_(creator_ids)).all())
+
+    items = []
+    for asset in assets:
+        version = versions.get(asset.id)
+        media_file = files.get(version.id) if version else None
+        thumbnail_url = None
+        if media_file and media_file.s3_key_thumbnail:
+            thumbnail_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+        items.append(FolderShareAssetItem(
+            id=asset.id,
+            name=asset.name,
+            asset_type=asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type),
+            thumbnail_url=thumbnail_url,
+            file_size=media_file.file_size_bytes if media_file else None,
+            duration_seconds=media_file.duration_seconds if media_file else None,
+            comment_count=comment_counts.get(version.id, 0) if version else 0,
+            version_count=version_counts.get(asset.id, 0) if link.show_versions else 1,
+            created_by_name=creator_names.get(asset.created_by) if with_creator else None,
+            created_at=asset.created_at,
+        ))
+    return items
+
+
+def _share_subfolder_items(db: Session, folders: list) -> list[FolderShareSubfolder]:
+    """The cards for shared subfolders, in the order given: how many live assets
+    and folders each holds directly, and thumbnails of its newest assets."""
+    folder_ids = [f.id for f in folders]
+    if not folder_ids:
+        return []
+    asset_counts = dict(
+        db.query(Asset.folder_id, sa_func.count(Asset.id))
+        .filter(Asset.folder_id.in_(folder_ids), Asset.deleted_at.is_(None))
+        .group_by(Asset.folder_id)
+        .all()
+    )
+    child_counts = dict(
+        db.query(Folder.parent_id, sa_func.count(Folder.id))
+        .filter(Folder.parent_id.in_(folder_ids), Folder.deleted_at.is_(None))
+        .group_by(Folder.parent_id)
+        .all()
+    )
+    # The newest few assets of every folder in one pass.
+    ranked = (
+        sqlalchemy.select(
+            Asset.id.label("id"),
+            Asset.folder_id.label("folder_id"),
+            sa_func.row_number().over(
+                partition_by=Asset.folder_id, order_by=(Asset.created_at.desc(), Asset.id),
+            ).label("position"),
+        )
+        .where(Asset.folder_id.in_(folder_ids), Asset.deleted_at.is_(None))
+        .subquery()
+    )
+    previews = db.execute(
+        sqlalchemy.select(ranked.c.id, ranked.c.folder_id)
+        .where(ranked.c.position <= SHARE_FOLDER_PREVIEW_THUMBNAILS)
+        .order_by(ranked.c.folder_id, ranked.c.position)
+    ).all()
+    versions = _latest_ready_versions(db, [row.id for row in previews])
+    files = _first_media_files(db, [v.id for v in versions.values()])
+
+    thumbnails: dict = {}
+    for row in previews:
+        version = versions.get(row.id)
+        media_file = files.get(version.id) if version else None
+        if media_file and media_file.s3_key_thumbnail:
+            thumbnails.setdefault(row.folder_id, []).append(
+                generate_presigned_get_url(media_file.s3_key_thumbnail)
+            )
+
+    return [
+        FolderShareSubfolder(
+            id=f.id,
+            name=f.name,
+            item_count=asset_counts.get(f.id, 0) + child_counts.get(f.id, 0),
+            thumbnail_urls=thumbnails.get(f.id, []),
+        )
+        for f in folders
+    ]
 
 
 # ── Share links ───────────────────────────────────────────────────────────────
@@ -1140,8 +1301,8 @@ def list_project_share_links(
 @router.get("/share/{token}/activity", response_model=list[ShareLinkActivityResponse])
 def get_share_link_activity(
     token: str,
-    page: int = 1,
-    per_page: int = 50,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=1, le=SHARE_MAX_PER_PAGE),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1330,8 +1491,8 @@ def create_multi_share_link(
 def get_folder_share_assets(
     token: str,
     folder_id: Optional[uuid.UUID] = None,
-    page: int = 1,
-    per_page: int = 50,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=1, le=SHARE_MAX_PER_PAGE),
     share_session: Optional[str] = Query(None, alias="share_session"),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
@@ -1363,24 +1524,7 @@ def get_folder_share_assets(
                 Folder.id.in_(multi_folder_ids),
                 Folder.deleted_at.is_(None),
             ).order_by(Folder.name).all()
-            for sf in shared_folders:
-                asset_count = db.query(sa_func.count(Asset.id)).filter(
-                    Asset.folder_id == sf.id, Asset.deleted_at.is_(None),
-                ).scalar() or 0
-                child_folder_count = db.query(sa_func.count(Folder.id)).filter(
-                    Folder.parent_id == sf.id, Folder.deleted_at.is_(None),
-                ).scalar() or 0
-                thumb_urls: list[str] = []
-                preview_assets = db.query(Asset).filter(
-                    Asset.folder_id == sf.id, Asset.deleted_at.is_(None),
-                ).order_by(Asset.created_at.desc()).limit(4).all()
-                for pa in preview_assets:
-                    mf = _get_latest_media_file(db, pa.id)
-                    if mf and mf.s3_key_thumbnail:
-                        thumb_urls.append(generate_presigned_get_url(mf.s3_key_thumbnail))
-                subfolder_items.append(FolderShareSubfolder(
-                    id=sf.id, name=sf.name, item_count=asset_count + child_folder_count, thumbnail_urls=thumb_urls,
-                ))
+            subfolder_items = _share_subfolder_items(db, shared_folders)
 
         # Get shared assets
         asset_items = []
@@ -1390,18 +1534,7 @@ def get_folder_share_assets(
             shared_assets = db.query(Asset).filter(
                 Asset.id.in_(multi_asset_ids), Asset.deleted_at.is_(None),
             ).order_by(Asset.created_at.desc()).offset(offset).limit(per_page).all()
-            for a in shared_assets:
-                mf = _get_latest_media_file(db, a.id)
-                thumbnail_url = generate_presigned_get_url(mf.s3_key_thumbnail) if mf and mf.s3_key_thumbnail else None
-                comment_count = _latest_version_comment_count(db, a.id)
-                asset_items.append(FolderShareAssetItem(
-                    id=a.id, name=a.name, asset_type=a.asset_type.value if hasattr(a.asset_type, 'value') else str(a.asset_type),
-                    thumbnail_url=thumbnail_url, created_at=a.created_at.isoformat() if a.created_at else "",
-                    file_size=mf.file_size_bytes if mf else None,
-                    duration_seconds=mf.duration_seconds if mf else None,
-                    comment_count=comment_count,
-                    version_count=(_ready_version_count(db, a.id) if link.show_versions else 1),
-                ))
+            asset_items = _share_asset_items(db, link, shared_assets, with_creator=False)
         else:
             total = 0
 
@@ -1442,37 +1575,7 @@ def get_folder_share_assets(
         Folder.deleted_at.is_(None),
     ).order_by(Folder.name).all()
 
-    subfolder_items = []
-    for sf in subfolders_query:
-        # Count assets + direct child folders in this subfolder
-        asset_count = db.query(sa_func.count(Asset.id)).filter(
-            Asset.folder_id == sf.id,
-            Asset.deleted_at.is_(None),
-        ).scalar() or 0
-        child_folder_count = db.query(sa_func.count(Folder.id)).filter(
-            Folder.parent_id == sf.id,
-            Folder.deleted_at.is_(None),
-        ).scalar() or 0
-
-        # Fetch up to 4 thumbnail previews from assets inside this subfolder
-        thumb_urls: list[str] = []
-        preview_assets = db.query(Asset).filter(
-            Asset.folder_id == sf.id,
-            Asset.deleted_at.is_(None),
-        ).order_by(Asset.created_at.desc()).limit(4).all()
-        for pa in preview_assets:
-            mf = _get_latest_media_file(db, pa.id)
-            if mf and mf.s3_key_thumbnail:
-                thumb_urls.append(generate_presigned_get_url(mf.s3_key_thumbnail))
-            if len(thumb_urls) >= 4:
-                break
-
-        subfolder_items.append(FolderShareSubfolder(
-            id=sf.id,
-            name=sf.name,
-            item_count=asset_count + child_folder_count,
-            thumbnail_urls=thumb_urls,
-        ))
+    subfolder_items = _share_subfolder_items(db, subfolders_query)
 
     # Get assets in this folder (or project root if target_folder_id is None)
     if target_folder_id:
@@ -1494,35 +1597,7 @@ def get_folder_share_assets(
         Asset.deleted_at.is_(None),
     ).order_by(Asset.created_at.desc()).offset(offset).limit(per_page).all()
 
-    asset_items = []
-    for asset in assets:
-        thumbnail_url = None
-        file_size = None
-        duration_seconds = None
-        media_file = _get_latest_media_file(db, asset.id)
-        if media_file:
-            if media_file.s3_key_thumbnail:
-                thumbnail_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
-            file_size = media_file.file_size_bytes
-            duration_seconds = media_file.duration_seconds
-
-        comment_count = _latest_version_comment_count(db, asset.id)
-
-        # Get creator name
-        creator = db.query(User).filter(User.id == asset.created_by).first() if asset.created_by else None
-
-        asset_items.append(FolderShareAssetItem(
-            id=asset.id,
-            name=asset.name,
-            asset_type=asset.asset_type.value,
-            thumbnail_url=thumbnail_url,
-            file_size=file_size,
-            duration_seconds=duration_seconds,
-            comment_count=comment_count,
-            version_count=(_ready_version_count(db, asset.id) if link.show_versions else 1),
-            created_by_name=creator.name if creator else None,
-            created_at=asset.created_at,
-        ))
+    asset_items = _share_asset_items(db, link, assets, with_creator=True)
 
     return FolderShareAssetsResponse(
         assets=asset_items,
