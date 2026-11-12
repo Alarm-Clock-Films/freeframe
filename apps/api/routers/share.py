@@ -41,14 +41,14 @@ from ..schemas.share import (
 )
 from ..services.permissions import (
     require_project_role, validate_share_link, validate_share_link_with_session,
-    validate_asset_in_share, enforce_share_link_visibility, _is_descendant_of, folder_chain_is_live,
+    validate_asset_in_share, enforce_share_link_visibility, _is_descendant_of, _is_under_any, folder_chain_is_live,
 )
 from ..services.auth_service import bcrypt_password_bytes
 from ..services.redis_service import create_share_session
 from ..services.search import escape_like
 from ..services.owned_keys import is_project_logo_key, sign_if_owned
 from ..services.avatar_keys import sign_avatar
-from ..services.s3_service import generate_presigned_get_url, build_download_filename
+from ..services.s3_service import generate_presigned_get_url, build_download_filename, display_url, display_urls
 from ..schemas.asset import DownloadOption
 from ..services.downloads import (
     describe_choices, download_choices, download_filename, may_download_original,
@@ -298,13 +298,13 @@ def _share_asset_items(
         if creator_ids:
             creator_names = dict(db.query(User.id, User.name).filter(User.id.in_(creator_ids)).all())
 
+    thumbnail_urls = display_urls(f.s3_key_thumbnail for f in files.values())
+
     items = []
     for asset in assets:
         version = versions.get(asset.id)
         media_file = files.get(version.id) if version else None
-        thumbnail_url = None
-        if media_file and media_file.s3_key_thumbnail:
-            thumbnail_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+        thumbnail_url = thumbnail_urls.get(media_file.s3_key_thumbnail) if media_file else None
         items.append(FolderShareAssetItem(
             id=asset.id,
             name=asset.name,
@@ -358,14 +358,13 @@ def _share_subfolder_items(db: Session, folders: list) -> list[FolderShareSubfol
     versions = _latest_ready_versions(db, [row.id for row in previews])
     files = _first_media_files(db, [v.id for v in versions.values()])
 
+    thumbnail_urls = display_urls(f.s3_key_thumbnail for f in files.values())
     thumbnails: dict = {}
     for row in previews:
         version = versions.get(row.id)
         media_file = files.get(version.id) if version else None
         if media_file and media_file.s3_key_thumbnail:
-            thumbnails.setdefault(row.folder_id, []).append(
-                generate_presigned_get_url(media_file.s3_key_thumbnail)
-            )
+            thumbnails.setdefault(row.folder_id, []).append(thumbnail_urls[media_file.s3_key_thumbnail])
 
     return [
         FolderShareSubfolder(
@@ -454,7 +453,7 @@ def _share_branding(db: Session, project_id: uuid.UUID) -> Optional[ShareBrandin
     logo_url = None
     if branding.use_cover_as_logo and project.poster_s3_key:
         try:
-            logo_url = generate_presigned_get_url(project.poster_s3_key)
+            logo_url = display_url(project.poster_s3_key)
         except Exception:
             logo_url = None
     if logo_url is None:
@@ -506,7 +505,7 @@ def _build_share_validate_response(
         media_file = _get_latest_media_file(db, asset.id)
         thumbnail_url = None
         if media_file and media_file.s3_key_thumbnail:
-            thumbnail_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+            thumbnail_url = display_url(media_file.s3_key_thumbnail)
         # Get stream URL
         stream_url = None
         if media_file:
@@ -1555,7 +1554,7 @@ def get_folder_share_assets(
             # validate_asset_in_share applies to assets
             if is_multi_share:
                 multi_folder_ids = [item.folder_id for item in multi_share_items if item.folder_id]
-                if not any(folder_id == fid or _is_descendant_of(db, folder_id, fid) for fid in multi_folder_ids):
+                if folder_id not in multi_folder_ids and not _is_under_any(db, folder_id, multi_folder_ids):
                     raise HTTPException(status_code=403, detail="Folder is not in the shared items")
         elif folder_id != link.folder_id and not _is_descendant_of(db, folder_id, link.folder_id):
             raise HTTPException(status_code=403, detail="Folder is not within the shared folder")
@@ -1735,7 +1734,7 @@ def get_share_stream_url(
     # Get thumbnail URL
     thumb_url = None
     if media_file.s3_key_thumbnail:
-        thumb_url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+        thumb_url = display_url(media_file.s3_key_thumbnail)
 
     return {
         "url": url,
@@ -1770,7 +1769,7 @@ def get_share_thumbnail_url(
     if not media_file or not media_file.s3_key_thumbnail:
         raise HTTPException(status_code=404, detail="Thumbnail not found")
 
-    url = generate_presigned_get_url(media_file.s3_key_thumbnail)
+    url = display_url(media_file.s3_key_thumbnail)
     return {"url": url}
 
 

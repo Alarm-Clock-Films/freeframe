@@ -289,11 +289,17 @@ def test_ip_rate_limit_works_without_expire_nx(monkeypatch):
 def test_global_rate_limit_works_without_expire_nx(monkeypatch):
     from apps.api.middleware import global_rate_limit
 
+    import asyncio
+    from .conftest import AsyncRedisOver
+
     r = FakeRedis(redis7=False)
-    monkeypatch.setattr(global_rate_limit, "get_redis", lambda: r)
+    monkeypatch.setattr(global_rate_limit, "get_redis", lambda: AsyncRedisOver(r))
     mw = global_rate_limit.GlobalRateLimitMiddleware(app=None)
-    results = [mw._check("ip:1.2.3.4", "read", 2)[0] for _ in range(4)]
-    assert results == [True, True, False, False]
+
+    async def four_requests():
+        return [(await mw._check("ip:1.2.3.4", "read", 2))[0] for _ in range(4)]
+
+    assert asyncio.run(four_requests()) == [True, True, False, False]
 
 
 # ── against a real Redis, when one is reachable ───────────────────────────────

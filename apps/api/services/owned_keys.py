@@ -74,6 +74,6 @@ def sign_if_owned(owned: bool, key: Optional[str]) -> Optional[str]:
         return None
     from . import s3_service
     try:
-        return s3_service.generate_presigned_get_url(key)
+        return s3_service.display_url(key)
     except Exception:
         return None

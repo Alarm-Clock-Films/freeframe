@@ -978,11 +978,17 @@ export default function ProjectDetailPage() {
                 // Download assets from selected folders
                 for (const folderId of folderIds) {
                   try {
-                    const folderAssets = await api.get<AssetResponse[]>(
-                      `/projects/${projectId}/assets?folder_id=${folderId}&skip=0&limit=100`,
-                    );
-                    for (const fa of folderAssets) {
-                      await downloadOne(fa.id);
+                    // Every page: the API now honours skip and limit, which it
+                    // used to ignore, and a folder can hold more than one page.
+                    const pageSize = 100;
+                    for (let skip = 0; ; skip += pageSize) {
+                      const folderAssets = await api.get<AssetResponse[]>(
+                        `/projects/${projectId}/assets?folder_id=${folderId}&skip=${skip}&limit=${pageSize}`,
+                      );
+                      for (const fa of folderAssets) {
+                        await downloadOne(fa.id);
+                      }
+                      if (folderAssets.length < pageSize) break;
                     }
                   } catch {}
                 }

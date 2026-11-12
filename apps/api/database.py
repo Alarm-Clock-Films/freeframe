@@ -32,9 +32,18 @@ def _engine_options() -> dict:
     each checkout is pinged first and connections are recycled sooner. The pool
     is also kept small there, since many instances may run at once.
     """
-    if not settings.running_on_vercel:
-        return {}
-    return {"pool_pre_ping": True, "pool_recycle": 300, "pool_size": 2, "max_overflow": 8}
+    if settings.running_on_vercel:
+        return {"pool_pre_ping": True, "pool_recycle": 300, "pool_size": 2, "max_overflow": 8}
+    # Elsewhere the pool is the driver's default unless DB_POOL_SIZE,
+    # DB_MAX_OVERFLOW or DB_POOL_PRE_PING say otherwise (see config.py).
+    options: dict = {}
+    if settings.db_pool_size is not None:
+        options["pool_size"] = settings.db_pool_size
+    if settings.db_max_overflow is not None:
+        options["max_overflow"] = settings.db_max_overflow
+    if settings.db_pool_pre_ping:
+        options["pool_pre_ping"] = True
+    return options
 
 
 engine = create_engine(pin_psycopg2_driver(settings.database_url), **_engine_options())

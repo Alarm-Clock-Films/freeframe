@@ -43,9 +43,15 @@ function ThumbCell({ asset, className }: { asset: AssetResponse; className?: str
   )
 }
 
+// More than the three shown, so assets with no thumbnail (audio, or a file
+// still processing) do not leave the card empty.
+const FOLDER_PREVIEW_ASSETS = 12
+
 function FolderThumbnails({ projectId, folderId, itemCount }: { projectId: string; folderId: string; itemCount: number }) {
   const { data: assets } = useSWR<AssetResponse[]>(
-    itemCount > 0 ? `/projects/${projectId}/assets?folder_id=${folderId}` : null,
+    // Only the newest few: the card shows three thumbnails, and without a
+    // limit every folder card loaded its folder's whole asset list.
+    itemCount > 0 ? `/projects/${projectId}/assets?folder_id=${folderId}&limit=${FOLDER_PREVIEW_ASSETS}` : null,
     (key: string) => api.get<AssetResponse[]>(key),
     { revalidateOnFocus: false },
   )

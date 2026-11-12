@@ -35,7 +35,7 @@ def sign_avatar(user_id: uuid.UUID | str | None, key: Optional[str]) -> Optional
     if not is_own_avatar_key(user_id, key):
         return None
     from . import s3_service
-    return s3_service.generate_presigned_get_url(key)
+    return s3_service.display_url(key)
 
 
 def delete_own_avatar(user_id: uuid.UUID | str, key: Optional[str]) -> bool:

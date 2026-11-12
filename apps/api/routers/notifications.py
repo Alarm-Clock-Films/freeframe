@@ -36,7 +36,18 @@ def list_notifications(
         query = query.filter(Notification.read == False)
     notifications = query.order_by(Notification.created_at.desc()).limit(50).all()
 
-    # Enrich with asset name, actor name, comment preview
+    # Enrich with asset name, actor name, comment preview. Loaded together:
+    # looked up per notification this was up to four queries for each of the
+    # fifty, on a list the notification bell refreshes.
+    def _by_id(model, ids):
+        ids = {i for i in ids if i}
+        return {row.id: row for row in db.query(model).filter(model.id.in_(ids)).all()} if ids else {}
+
+    assets = _by_id(Asset, (n.asset_id for n in notifications))
+    comments = _by_id(Comment, (n.comment_id for n in notifications))
+    authors = _by_id(User, (c.author_id for c in comments.values()))
+    guests = _by_id(GuestUser, (c.guest_author_id for c in comments.values() if not c.author_id))
+
     results = []
     for n in notifications:
         asset_name = None
@@ -45,27 +56,25 @@ def list_notifications(
         comment_preview = None
         project_id = None
 
-        if n.asset_id:
-            asset = db.query(Asset).filter(Asset.id == n.asset_id).first()
-            if asset:
-                asset_name = asset.name
-                project_id = asset.project_id
+        asset = assets.get(n.asset_id)
+        if asset:
+            asset_name = asset.name
+            project_id = asset.project_id
 
-        if n.comment_id:
-            comment = db.query(Comment).filter(Comment.id == n.comment_id).first()
-            if comment:
-                comment_preview = comment.body[:100] if comment.body else None
-                # Get actor from comment author
-                if comment.author_id:
-                    author = db.query(User).filter(User.id == comment.author_id).first()
-                    if author:
-                        actor_name = author.name
-                # A share-link guest has no account; the comment names them instead
-                elif comment.guest_author_id:
-                    guest = db.query(GuestUser).filter(GuestUser.id == comment.guest_author_id).first()
-                    if guest:
-                        actor_name = guest.name
-                        actor_is_guest = True
+        comment = comments.get(n.comment_id)
+        if comment:
+            comment_preview = comment.body[:100] if comment.body else None
+            # Get actor from comment author
+            if comment.author_id:
+                author = authors.get(comment.author_id)
+                if author:
+                    actor_name = author.name
+            # A share-link guest has no account; the comment names them instead
+            elif comment.guest_author_id:
+                guest = guests.get(comment.guest_author_id)
+                if guest:
+                    actor_name = guest.name
+                    actor_is_guest = True
 
         results.append(NotificationResponse(
             id=n.id,

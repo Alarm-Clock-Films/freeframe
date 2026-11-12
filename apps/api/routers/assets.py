@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, literal, select
+from sqlalchemy import exists, func, literal, or_, select
 import os
 import uuid
 from datetime import datetime, timezone
@@ -15,8 +15,8 @@ from ..models.activity import Mention, Notification, NotificationType
 from ..models.comment import Comment, COMMENT_TREE_MAX_DEPTH
 from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, DownloadOption
 from ..schemas.notification import AssignmentUpdate
-from ..services.permissions import require_project_role, require_project_visible, require_asset_access, can_access_asset
-from ..services.s3_service import generate_presigned_get_url, build_download_filename
+from ..services.permissions import require_project_role, require_project_visible, require_asset_access, accessible_asset_ids
+from ..services.s3_service import generate_presigned_get_url, build_download_filename, display_url, display_urls
 from ..services.downloads import (
     describe_choices, download_choices, download_filename, may_download_original,
     original_allowed_for_download, pick_or_refuse,
@@ -130,7 +130,7 @@ def _build_asset_response(asset: Asset, db: Session) -> AssetResponse:
         if asset.asset_type != AssetType.audio:
             for f in files:
                 if f.s3_key_thumbnail:
-                    thumbnail_url = generate_presigned_get_url(f.s3_key_thumbnail)
+                    thumbnail_url = display_url(f.s3_key_thumbnail)
                     break
 
     resp = AssetResponse.model_validate(asset)
@@ -182,21 +182,28 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session) -> list[AssetR
     for f in all_files:
         files_by_version.setdefault(f.version_id, []).append(f)
 
+    # The thumbnail of each asset: the first file of its version that has one.
+    # Audio stores waveform JSON in s3_key_thumbnail — skip it, it's not an image.
+    thumbnail_keys: dict = {}
+    for asset in assets:
+        version = version_by_asset.get(asset.id)
+        if version and asset.asset_type != AssetType.audio:
+            for f in files_by_version.get(version.id, []):
+                if f.s3_key_thumbnail:
+                    thumbnail_keys[asset.id] = f.s3_key_thumbnail
+                    break
+    # Signed together, so the whole grid costs one cache round trip.
+    thumbnail_urls = display_urls(thumbnail_keys.values())
+
     result = []
     for asset in assets:
         version = version_by_asset.get(asset.id)
         version_response = None
-        thumbnail_url = None
+        thumbnail_url = thumbnail_urls.get(thumbnail_keys.get(asset.id))
         if version:
             files = files_by_version.get(version.id, [])
             version_response = AssetVersionResponse.model_validate(version)
             version_response.files = [MediaFileResponse.model_validate(f) for f in files]
-            # Audio stores waveform JSON in s3_key_thumbnail — skip it, it's not an image.
-            if asset.asset_type != AssetType.audio:
-                for f in files:
-                    if f.s3_key_thumbnail:
-                        thumbnail_url = generate_presigned_get_url(f.s3_key_thumbnail)
-                        break
 
         asset_resp = AssetResponse.model_validate(asset)
         asset_resp.latest_version = version_response
@@ -206,14 +213,30 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session) -> list[AssetR
     return result
 
 
+# The most assets one page of GET /projects/{id}/assets may ask for.
+ASSET_LIST_MAX_LIMIT = 500
+
+
 @router.get("/projects/{project_id}/assets", response_model=list[AssetResponse])
 def list_assets(
     project_id: uuid.UUID,
     include_failed: bool = Query(False, description="Include assets whose latest version failed processing"),
     folder_id: Optional[str] = Query(None, description="Filter by folder. 'root' for root level, UUID for specific folder."),
+    skip: int = Query(0, ge=0, description="Assets to skip, newest first"),
+    limit: Optional[int] = Query(
+        None, ge=1, le=ASSET_LIST_MAX_LIMIT,
+        description="Most assets to return. Omitted: all of them, as before.",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """A project's assets, newest first.
+
+    Everything in the folder (or the project) when `limit` is omitted, which is
+    what the project grid loads and sorts itself. A caller that needs only a
+    few, such as a folder card's preview, passes `limit` and gets only those
+    built and signed.
+    """
     # Allow access if user is a project member OR the project is public
     require_project_visible(db, project_id, current_user)
 
@@ -227,30 +250,29 @@ def list_assets(
     elif folder_id is not None:
         query = query.filter(Asset.folder_id == uuid.UUID(folder_id))
 
-    assets = query.all()
-
     if not include_failed:
-        # Exclude assets where the only version is failed or still uploading
-        asset_ids = [a.id for a in assets]
-        if asset_ids:
-            # Find assets that have at least one non-failed, non-uploading version
-            usable = set(
-                row[0] for row in db.query(AssetVersion.asset_id).filter(
-                    AssetVersion.asset_id.in_(asset_ids),
-                    AssetVersion.deleted_at.is_(None),
-                    AssetVersion.processing_status.notin_([ProcessingStatus.failed, ProcessingStatus.uploading]),
-                ).distinct().all()
-            )
-            # Also include assets with no versions yet (just created)
-            has_any_version = set(
-                row[0] for row in db.query(AssetVersion.asset_id).filter(
-                    AssetVersion.asset_id.in_(asset_ids),
-                    AssetVersion.deleted_at.is_(None),
-                ).distinct().all()
-            )
-            assets = [a for a in assets if a.id in usable or a.id not in has_any_version]
+        # Leave out assets whose every version is failed or still uploading,
+        # but keep assets with no versions yet (just created). In the query,
+        # not after it: a page has to be cut from the assets that are listed.
+        live_version = exists().where(
+            AssetVersion.asset_id == Asset.id,
+            AssetVersion.deleted_at.is_(None),
+        )
+        usable_version = exists().where(
+            AssetVersion.asset_id == Asset.id,
+            AssetVersion.deleted_at.is_(None),
+            AssetVersion.processing_status.notin_([ProcessingStatus.failed, ProcessingStatus.uploading]),
+        )
+        query = query.filter(or_(usable_version, ~live_version))
 
-    return _build_asset_responses_bulk(assets, db)
+    # A fixed order, so pages do not overlap or skip.
+    query = query.order_by(Asset.created_at.desc(), Asset.id)
+    if skip:
+        query = query.offset(skip)
+    if limit is not None:
+        query = query.limit(limit)
+
+    return _build_asset_responses_bulk(query.all(), db)
 
 
 # Declared before `/assets/{asset_id}`: routes match in order, and after it
@@ -268,7 +290,8 @@ def get_assets_batch(
     is left out of the answer instead of failing the request.
     """
     assets = db.query(Asset).filter(Asset.id.in_(ids), Asset.deleted_at.is_(None)).all()
-    visible = [a for a in assets if can_access_asset(db, a, current_user)]
+    allowed = accessible_asset_ids(db, assets, current_user)
+    visible = [a for a in assets if a.id in allowed]
     return _build_asset_responses_bulk(visible, db)
 
 
