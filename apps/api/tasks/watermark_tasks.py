@@ -68,8 +68,12 @@ def apply_watermark(
         s3 = get_s3_client()
 
         with tempfile.TemporaryDirectory() as tmp:
-            # Determine file extension from original filename
-            _, ext = os.path.splitext(source.original_filename)
+            # The extension of the stored key, which the server derived from the
+            # validated file type (safe_raw_extension). Never the uploaded
+            # filename's: FFmpeg picks a demuxer from the extension, and a
+            # client-chosen ".m3u8" made it read the upload as a playlist of
+            # other files to open.
+            _, ext = os.path.splitext(source.s3_key_raw or "")
             ext = ext.lower() or ".mp4"
             local_path = os.path.join(tmp, f"source{ext}")
 
@@ -82,7 +86,14 @@ def apply_watermark(
             # Build ffmpeg drawtext filter if we have watermark text
             vf_filters = []
             if watermark_text:
-                escaped = watermark_text.replace("'", r"'\''").replace(":", r"\:")
+                # The text goes in a file, not into the filter string. It is
+                # a user's name or a project's custom text, and escaping it
+                # for the two levels of filter parsing missed backslashes: a
+                # text of `\:option=value` set drawtext options of its own.
+                # expansion=none keeps `%{...}` in the text literal too.
+                text_path = os.path.join(tmp, "watermark.txt")
+                with open(text_path, "w", encoding="utf-8") as text_file:
+                    text_file.write(watermark_text)
                 fontsize = 24
                 if position == "center":
                     x, y = "(w-text_w)/2", "(h-text_h)/2"
@@ -91,8 +102,8 @@ def apply_watermark(
                 else:  # corner / bottom_right
                     x, y = "w-text_w-10", "h-text_h-10"
                 vf_filters.append(
-                    f"drawtext=text='{escaped}':fontsize={fontsize}"
-                    f":fontcolor=white@{opacity}:x={x}:y={y}"
+                    f"drawtext=textfile='{text_path}':expansion=none:fontsize={fontsize}"
+                    f":fontcolor=white@{float(opacity)}:x={x}:y={y}"
                 )
 
             if vf_filters:
@@ -101,6 +112,9 @@ def apply_watermark(
                 vf_filters.append("pad=ceil(iw/2)*2:ceil(ih/2)*2")
                 cmd = [
                     "ffmpeg", "-y",
+                    # A local copy of an upload: nothing it names is fetched
+                    # over the network.
+                    "-protocol_whitelist", "file",
                     "-i", local_path,
                     "-vf", ",".join(vf_filters),
                 ]
