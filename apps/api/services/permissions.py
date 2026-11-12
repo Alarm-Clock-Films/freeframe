@@ -151,40 +151,74 @@ def project_events_denial(
     return None
 
 
+def _is_project_member(project_id, user_id):
+    return exists().where(
+        ProjectMember.project_id == project_id,
+        ProjectMember.user_id == user_id,
+        ProjectMember.deleted_at.is_(None),
+    )
+
+
 def can_access_asset(db: Session, asset: Asset, user: User) -> bool:
     """Check if user can access the asset via any path.
 
-    No path reaches an asset whose project is in the trash.
+    No path reaches an asset whose project is in the trash. On a live project:
+    the asset's creator, a project member, someone the asset is shared with
+    directly, or anyone signed in when the project is public.
+
+    One round trip. It used to be up to five (the project, the membership,
+    which joined the project again, the direct share, and the project a third
+    time for `is_public`), on every request that opens, comments on or
+    streams an asset.
     """
-    project_live = db.query(Project.id).filter(
-        Project.id == asset.project_id,
-        Project.deleted_at.is_(None),
-    ).first()
-    if not project_live:
-        return False
-
-    # 1. Asset creator
-    if asset.created_by == user.id:
-        return True
-
-    # 2. Project member
-    if get_project_member(db, asset.project_id, user.id):
-        return True
-
-    # 3. Direct AssetShare with user
-    direct = db.query(AssetShare).filter(
+    is_shared = exists().where(
         AssetShare.asset_id == asset.id,
         AssetShare.shared_with_user_id == user.id,
         AssetShare.deleted_at.is_(None),
+    )
+    row = db.query(
+        Project.is_public,
+        _is_project_member(Project.id, user.id).label("is_member"),
+        is_shared.label("is_shared"),
+    ).filter(
+        Project.id == asset.project_id,
+        Project.deleted_at.is_(None),
     ).first()
-    if direct:
-        return True
+    if row is None:
+        return False
+    return bool(asset.created_by == user.id or row.is_member or row.is_shared or row.is_public)
 
-    # 4. Public project — any authenticated user can view
-    if is_public_project(db, asset.project_id):
-        return True
 
-    return False
+def accessible_asset_ids(db: Session, assets: list[Asset], user: User) -> set:
+    """The ids of the assets `user` may access: can_access_asset for a whole
+    list in two queries, however long the list and however many projects."""
+    if not assets:
+        return set()
+    project_ids = {a.project_id for a in assets}
+    projects = {
+        row.id: row
+        for row in db.query(
+            Project.id,
+            Project.is_public,
+            _is_project_member(Project.id, user.id).label("is_member"),
+        ).filter(Project.id.in_(project_ids), Project.deleted_at.is_(None)).all()
+    }
+    shared = {
+        row[0]
+        for row in db.query(AssetShare.asset_id).filter(
+            AssetShare.asset_id.in_([a.id for a in assets]),
+            AssetShare.shared_with_user_id == user.id,
+            AssetShare.deleted_at.is_(None),
+        ).all()
+    }
+    allowed = set()
+    for asset in assets:
+        project = projects.get(asset.project_id)
+        if project is None:
+            continue  # deleted project: no path reaches it
+        if asset.created_by == user.id or project.is_member or project.is_public or asset.id in shared:
+            allowed.add(asset.id)
+    return allowed
 
 
 def require_asset_access(db: Session, asset: Asset, user: User) -> None:
