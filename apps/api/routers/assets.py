@@ -16,7 +16,7 @@ from ..models.comment import Comment, COMMENT_TREE_MAX_DEPTH
 from ..schemas.asset import AssetResponse, AssetVersionResponse, AssetUpdate, StreamUrlResponse, MediaFileResponse, DownloadOption
 from ..schemas.notification import AssignmentUpdate
 from ..services.permissions import require_project_role, require_project_visible, require_asset_access, can_access_asset
-from ..services.s3_service import generate_presigned_get_url, build_download_filename
+from ..services.s3_service import generate_presigned_get_url, build_download_filename, display_url, display_urls
 from ..services.downloads import (
     describe_choices, download_choices, download_filename, may_download_original,
     original_allowed_for_download, pick_or_refuse,
@@ -130,7 +130,7 @@ def _build_asset_response(asset: Asset, db: Session) -> AssetResponse:
         if asset.asset_type != AssetType.audio:
             for f in files:
                 if f.s3_key_thumbnail:
-                    thumbnail_url = generate_presigned_get_url(f.s3_key_thumbnail)
+                    thumbnail_url = display_url(f.s3_key_thumbnail)
                     break
 
     resp = AssetResponse.model_validate(asset)
@@ -182,21 +182,28 @@ def _build_asset_responses_bulk(assets: list[Asset], db: Session) -> list[AssetR
     for f in all_files:
         files_by_version.setdefault(f.version_id, []).append(f)
 
+    # The thumbnail of each asset: the first file of its version that has one.
+    # Audio stores waveform JSON in s3_key_thumbnail — skip it, it's not an image.
+    thumbnail_keys: dict = {}
+    for asset in assets:
+        version = version_by_asset.get(asset.id)
+        if version and asset.asset_type != AssetType.audio:
+            for f in files_by_version.get(version.id, []):
+                if f.s3_key_thumbnail:
+                    thumbnail_keys[asset.id] = f.s3_key_thumbnail
+                    break
+    # Signed together, so the whole grid costs one cache round trip.
+    thumbnail_urls = display_urls(thumbnail_keys.values())
+
     result = []
     for asset in assets:
         version = version_by_asset.get(asset.id)
         version_response = None
-        thumbnail_url = None
+        thumbnail_url = thumbnail_urls.get(thumbnail_keys.get(asset.id))
         if version:
             files = files_by_version.get(version.id, [])
             version_response = AssetVersionResponse.model_validate(version)
             version_response.files = [MediaFileResponse.model_validate(f) for f in files]
-            # Audio stores waveform JSON in s3_key_thumbnail — skip it, it's not an image.
-            if asset.asset_type != AssetType.audio:
-                for f in files:
-                    if f.s3_key_thumbnail:
-                        thumbnail_url = generate_presigned_get_url(f.s3_key_thumbnail)
-                        break
 
         asset_resp = AssetResponse.model_validate(asset)
         asset_resp.latest_version = version_response

@@ -11,7 +11,7 @@ from ..models.asset import Asset, AssetVersion, MediaFile, ProcessingStatus
 from ..schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectMemberResponse, AddProjectMemberRequest, UpdateProjectMemberRequest
 from ..tasks.email_tasks import send_project_added_email
 from ..tasks.celery_app import send_task_safe
-from ..services.s3_service import put_object, generate_presigned_get_url, delete_object
+from ..services.s3_service import put_object, generate_presigned_get_url, delete_object, display_url
 from ..services.storage import project_storage_used_bytes
 from ..config import settings
 
@@ -25,7 +25,7 @@ def _get_project(db: Session, project_id: uuid.UUID) -> Project:
 
 def _resolve_poster_url(project: Project) -> str | None:
     if project.poster_s3_key:
-        return generate_presigned_get_url(project.poster_s3_key)
+        return display_url(project.poster_s3_key)
     return None
 
 def _require_project_owner(db: Session, project_id: uuid.UUID, user: User) -> ProjectMember:

@@ -153,3 +153,14 @@ def real_db():
         session.close()
         trans.rollback()
         conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _forget_display_urls():
+    """Each API process keeps the image links it has signed (s3_service.display_urls).
+    Emptied between tests so one test's links, or its patched signer, never reach the next."""
+    from apps.api.services import s3_service
+    s3_service._display_url_local.clear()
+    yield
+    s3_service._display_url_local.clear()
+

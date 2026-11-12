@@ -608,6 +608,111 @@ def generate_presigned_get_url(s3_key: str, expires_in: int = 3600, download_fil
         ExpiresIn=expires_in,
     )
 
+# ── Links for images a page shows ────────────────────────────────────────────
+# Thumbnails, avatars, posters and logos are signed into every response that
+# lists them. A fresh signature is a different URL, so a browser that had the
+# image cached fetched it again on every reload and every background refresh
+# of a list. These links are signed once and then handed out again for
+# DISPLAY_URL_REUSE_SECONDS, shared between the API's worker processes through
+# Redis, with a copy in each process so a repeated avatar costs no round trip.
+#
+# Signed for twice as long as they are reused, so a link is always good for at
+# least an hour after it is handed out, which is what a fresh one was good for.
+# Only for images shown in the interface: stream and download links are still
+# signed per request.
+DISPLAY_URL_REUSE_SECONDS = 3600
+DISPLAY_URL_LIFETIME_SECONDS = 2 * DISPLAY_URL_REUSE_SECONDS
+_DISPLAY_URL_PREFIX = "display_url:"
+_DISPLAY_URL_LOCAL_MAX = 20_000
+# s3 key -> (monotonic time its reuse ends, url)
+_display_url_local: dict[str, tuple[float, str]] = {}
+
+
+@lru_cache(maxsize=1)
+def _display_url_namespace() -> str:
+    """Changes when what a signed link depends on does, so a link signed for
+    another endpoint, bucket or key pair is never handed out after a config change."""
+    import hashlib
+    parts = (
+        settings.s3_storage, settings.s3_public_endpoint or settings.s3_endpoint or "",
+        settings.s3_bucket, settings.s3_access_key, settings.s3_region,
+    )
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
+def display_urls(s3_keys) -> dict[str, str]:
+    """A signed GET link for each key, reused while it is still fresh.
+
+    One Redis round trip for all the keys the process does not already hold,
+    and one more to store the links signed now. Without Redis every link is
+    simply signed, as before.
+    """
+    now = time.monotonic()
+    urls: dict[str, str] = {}
+    wanted: list[str] = []
+    for key in dict.fromkeys(k for k in s3_keys if k):
+        held = _display_url_local.get(key)
+        if held and held[0] > now:
+            urls[key] = held[1]
+        else:
+            wanted.append(key)
+    if not wanted:
+        return urls
+
+    namespace = _display_url_namespace()
+    redis_keys = [f"{_DISPLAY_URL_PREFIX}{namespace}:{key}" for key in wanted]
+    r = None
+    stored: list = [None] * len(wanted)
+    try:
+        from .redis_service import get_redis
+        r = get_redis()
+        stored = r.mget(redis_keys)
+    except Exception:  # noqa: BLE001 - the cache is an optimisation; sign instead
+        r = None
+
+    wall = time.time()
+    fresh: dict[str, str] = {}
+    for key, redis_key, value in zip(wanted, redis_keys, stored):
+        url = None
+        if value:
+            # "<unix time its reuse ends>|<url>"
+            ends_at, _, cached_url = str(value).partition("|")
+            try:
+                remaining = float(ends_at) - wall
+            except ValueError:
+                remaining = 0
+            if cached_url and remaining > 0:
+                url = cached_url
+                _remember_display_url(key, url, now + remaining)
+        if url is None:
+            url = generate_presigned_get_url(key, expires_in=DISPLAY_URL_LIFETIME_SECONDS)
+            _remember_display_url(key, url, now + DISPLAY_URL_REUSE_SECONDS)
+            fresh[redis_key] = f"{wall + DISPLAY_URL_REUSE_SECONDS}|{url}"
+        urls[key] = url
+
+    if fresh and r is not None:
+        try:
+            pipe = r.pipeline(transaction=False)
+            for redis_key, value in fresh.items():
+                pipe.set(redis_key, value, ex=DISPLAY_URL_REUSE_SECONDS)
+            pipe.execute()
+        except Exception:  # noqa: BLE001 - see above
+            pass
+    return urls
+
+
+def display_url(s3_key: str) -> str:
+    """display_urls for one key."""
+    return display_urls([s3_key])[s3_key]
+
+
+def _remember_display_url(s3_key: str, url: str, reuse_ends: float) -> None:
+    if len(_display_url_local) >= _DISPLAY_URL_LOCAL_MAX:
+        # Rare, and cheap to rebuild from Redis; simpler than tracking age.
+        _display_url_local.clear()
+    _display_url_local[s3_key] = (reuse_ends, url)
+
+
 def generate_internal_presigned_get_url(s3_key: str, expires_in: int = 3600) -> str:
     """Generate a presigned GET URL using the API's configured S3 endpoint.
 
