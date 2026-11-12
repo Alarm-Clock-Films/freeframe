@@ -54,6 +54,20 @@ class Settings(BaseSettings):
     # first (the name used everywhere else in this repo) wins when both exist.
     database_url: str = Field(validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"))
     redis_url: str = Field(validation_alias=AliasChoices("REDIS_URL", "KV_URL"))
+    # The API's database connection pool, per process (each API worker and each
+    # Celery worker has its own). Unset keeps the driver defaults: 5 connections
+    # kept open and 10 more opened under load. A worker serves up to 40
+    # requests at once, so with more than 15 of them in the database the rest
+    # wait for a connection. Raise these for a busy instance, keeping
+    # (pool size + overflow) x processes under Postgres's max_connections
+    # (100 by default). On Vercel the pool is kept small whatever these say.
+    db_pool_size: int | None = Field(None, ge=1)
+    db_max_overflow: int | None = Field(None, ge=0)
+    # Check a pooled connection before each use, and replace it if the database
+    # dropped it (a restart, an idle timeout on a managed Postgres). Costs one
+    # round trip per request; without it the first requests after a database
+    # restart fail. Always on when running on Vercel.
+    db_pool_pre_ping: bool = False
     # Celery broker. Unset means REDIS_URL, or Vercel Queues (`vercel://`)
     # when running on Vercel. See docs/deployment-vercel.md.
     celery_broker_url: str | None = None

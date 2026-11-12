@@ -41,7 +41,7 @@ from ..schemas.share import (
 )
 from ..services.permissions import (
     require_project_role, validate_share_link, validate_share_link_with_session,
-    validate_asset_in_share, enforce_share_link_visibility, _is_descendant_of, folder_chain_is_live,
+    validate_asset_in_share, enforce_share_link_visibility, _is_descendant_of, _is_under_any, folder_chain_is_live,
 )
 from ..services.auth_service import bcrypt_password_bytes
 from ..services.redis_service import create_share_session
@@ -1554,7 +1554,7 @@ def get_folder_share_assets(
             # validate_asset_in_share applies to assets
             if is_multi_share:
                 multi_folder_ids = [item.folder_id for item in multi_share_items if item.folder_id]
-                if not any(folder_id == fid or _is_descendant_of(db, folder_id, fid) for fid in multi_folder_ids):
+                if folder_id not in multi_folder_ids and not _is_under_any(db, folder_id, multi_folder_ids):
                     raise HTTPException(status_code=403, detail="Folder is not in the shared items")
         elif folder_id != link.folder_id and not _is_descendant_of(db, folder_id, link.folder_id):
             raise HTTPException(status_code=403, detail="Folder is not within the shared folder")

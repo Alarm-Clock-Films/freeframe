@@ -713,6 +713,8 @@ All environment variables are documented in [`.env.example`](../.env.example). K
 | `COMMENT_ATTACHMENT_MAX_BYTES` | Largest comment attachment a client may declare | `104857600` (100 MB) |
 | `GUEST_COMMENTS_PER_MINUTE` | Comments one address may post through share links per minute; `0` = no limit | `20` |
 | `API_WORKERS` | Gunicorn worker processes | `4` |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | Database connections each process keeps open, and how many more it opens under load. Keep (size + overflow) × processes under Postgres's `max_connections` | `5` / `10` |
+| `DB_POOL_PRE_PING` | Check each pooled connection before use, so requests survive a database restart; one extra round trip per request | `false` |
 | `TRANSCODING_CONCURRENCY` | Parallel transcoding jobs | `2` |
 | `EMAIL_CONCURRENCY` | Parallel email jobs | `2` |
 | `MAINTENANCE_CONCURRENCY` | Parallel housekeeping jobs | `1` |

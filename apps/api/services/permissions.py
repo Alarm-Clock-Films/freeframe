@@ -1,5 +1,5 @@
 from fastapi import HTTPException, status
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, literal, or_, select
 from sqlalchemy.orm import Session
 import uuid
 from ..models.user import User, UserStatus
@@ -345,23 +345,48 @@ def validate_share_link_with_session(
     return link
 
 
+# Far above any real folder depth (folder_paths.MAX_FOLDER_DEPTH); it only ends
+# the walk if a parent cycle ever exists.
+_ANCESTOR_WALK_LIMIT = 64
+
+
+def _is_under_any(db: Session, folder_id: uuid.UUID, ancestor_ids) -> bool:
+    """Whether `folder_id` is one of `ancestor_ids` or lies under one of them,
+    through live folders only.
+
+    A trashed or missing folder anywhere on the way up, the ancestor included,
+    means it does not. One round trip: a recursive walk up `parent_id`. It used
+    to be a query per level, repeated for each ancestor a multi-item link lists.
+    """
+    ancestor_ids = set(ancestor_ids)
+    if not ancestor_ids or folder_id is None:
+        return False
+    chain = (
+        select(Folder.id, Folder.parent_id, Folder.deleted_at, literal(0).label("depth"))
+        .where(Folder.id == folder_id)
+        .cte("folder_ancestors", recursive=True)
+    )
+    chain = chain.union_all(
+        select(Folder.id, Folder.parent_id, Folder.deleted_at, chain.c.depth + 1)
+        .join(chain, Folder.id == chain.c.parent_id)
+        .where(chain.c.depth < _ANCESTOR_WALK_LIMIT)
+    )
+    rows = db.execute(select(chain.c.id, chain.c.deleted_at).order_by(chain.c.depth)).all()
+    for row in rows:
+        if row.deleted_at is not None:
+            return False
+        if row.id in ancestor_ids:
+            return True
+    return False
+
+
 def _is_descendant_of(db: Session, folder_id: uuid.UUID, ancestor_id: uuid.UUID) -> bool:
     """Check if folder_id is a descendant of ancestor_id via parent chain traversal.
 
     Only live folders count: a trashed folder anywhere on the path, ancestor_id
     included, means it is not a descendant.
     """
-    current_id = folder_id
-    visited = set()
-    while current_id and current_id not in visited:
-        visited.add(current_id)
-        folder = db.query(Folder.parent_id, Folder.deleted_at).filter(Folder.id == current_id).first()
-        if not folder or folder.deleted_at is not None:
-            return False
-        if current_id == ancestor_id:
-            return True
-        current_id = folder.parent_id
-    return False
+    return _is_under_any(db, folder_id, [ancestor_id])
 
 
 def validate_asset_in_share(db: Session, link: ShareLink, asset: Asset) -> None:
@@ -391,7 +416,9 @@ def validate_asset_in_share(db: Session, link: ShareLink, asset: Asset) -> None:
             multi_folder_ids = {item.folder_id for item in multi_items if item.folder_id}
             if asset.id not in multi_asset_ids:
                 # Check if asset is in one of the shared folders
-                if not any(asset.folder_id == fid or (asset.folder_id and _is_descendant_of(db, asset.folder_id, fid)) for fid in multi_folder_ids):
+                if not asset.folder_id or not (
+                    asset.folder_id in multi_folder_ids or _is_under_any(db, asset.folder_id, multi_folder_ids)
+                ):
                     raise HTTPException(status_code=403, detail="Asset is not in the shared items")
     else:
         raise HTTPException(status_code=400, detail="Invalid share link")
