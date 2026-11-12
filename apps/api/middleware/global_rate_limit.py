@@ -86,13 +86,10 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
         try:
             r = get_redis()
             key = f"grl:{action}:{identity}"
-            current = r.get(key)
-
-            if current is not None and int(current) >= max_requests:
-                ttl = r.ttl(key)
-                return False, max(ttl, 1)
-
-            count_in_window(r, key, WINDOW_SECONDS)
+            # Count first, then compare, so requests sent together cannot
+            # all pass on the same reading of the counter.
+            if count_in_window(r, key, WINDOW_SECONDS) > max_requests:
+                return False, max(r.ttl(key), 1)
             return True, 0
         except Exception:
             # Fail open — allow the request if Redis is unavailable

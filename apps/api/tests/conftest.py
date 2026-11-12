@@ -57,6 +57,7 @@ def _make_user(
     u.email_verified = False
     u.preferences = {}
     u.invite_token = None
+    u.token_version = 1
     return u
 
 
