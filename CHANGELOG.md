@@ -54,6 +54,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Vercel BotID on sign-in and share-link passwords.** On Vercel, with `BOTID_COOKIE_SECRET` set, sending or checking a sign-in code, password login and the share-link password check accept only a browser BotID has classified as a person in the last five minutes, with no CAPTCHA. The web app's new `/botid/verify` route runs the check and sets a short-lived signed cookie the API verifies. Unset (Docker, local development) changes nothing. See [Bot protection](docs/deployment-vercel.md#bot-protection).
 - **Security headers.** Pages send `X-Frame-Options: SAMEORIGIN` and `Content-Security-Policy: frame-ancestors 'self'` (so other sites can't frame FreeFrame for clickjacking), `X-Content-Type-Options: nosniff`, a referrer policy and a permissions policy that turns off camera, microphone, location, payment and USB. API responses send `nosniff`, `X-Frame-Options: DENY` and the same referrer policy.
 
+## [1.22.2] - 2026-11-26
+
+Security release: fixes [GHSA-vh3c-rxj8-gx2q](https://github.com/Techiebutler/freeframe/security/advisories/GHSA-vh3c-rxj8-gx2q). Installs that ran v1.0.0 to v1.9.x on a store other than AWS S3 still have a bucket policy that lets anyone read processed media whose URL they have. Upgrading is strongly recommended for them. It contains only this fix on top of v1.22.1, and no migrations.
+
+### Security
+- **Startup removes the public-read bucket policy that v1.0.0 to v1.9.x wrote.** Those releases let anyone read objects under `processed/` (streams, renditions and thumbnails, not originals) on a non-AWS store without signing in, given the object's URL. v1.10.0 stopped writing the policy but left it on a bucket that already had it, so upgraded installs still have it, and revoking a share link did not take access away from someone who had kept a URL. The API now removes that statement when it starts and logs a warning saying so; any other statement in the policy stays. If the key may not change the policy, the warning says to remove it by hand. `S3_STORAGE=s3` (AWS) was never affected, and stores without bucket policies are left alone. If something outside FreeFrame reads `processed/` without signing in, give it a statement of its own.
+
+### Contributors
+Thanks to @jeremy-pixelated for reporting this.
+
+## [1.22.1] - 2026-11-17
+
+Security release: fixes [GHSA-9rqc-xmrj-9qc6](https://github.com/Techiebutler/freeframe/security/advisories/GHSA-9rqc-xmrj-9qc6), which let read-only project members read share-link passwords and let guests keep access after a link's password was changed. Upgrading is strongly recommended. It contains only this fix on top of v1.22.0, and no migrations.
+
+### Security
+- **Share-link settings show a link's password only to the project's editors and owners, and changing it signs out existing guests.** Reviewers and viewers get `has_password` without the password, the settings panel says "Password set" when it is not shown one, and every response that describes a link, including the create responses and the asset and folder link lists, reports `has_password` correctly. Changing or removing a link's password, disabling the link or deleting it now ends the guest sessions opened before, so a guest has to enter the new password. The link's creator opens it without the password only while they are an editor or owner of the project, so a creator who was removed or demoted needs the current password like any guest. Emptying the password box no longer removes the password (the switch does that), and a link password is limited to 128 bytes; the settings say so instead of saving a longer one. (#627)
+
 ## [1.22.0] - 2026-10-29
 
 ### Upgrade notes
