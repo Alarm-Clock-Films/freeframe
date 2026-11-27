@@ -8,8 +8,10 @@ sign-in code limits, branding first-paint, accent text colours, Delete forever
 in the trash, and more). Upstream keeps shipping releases. The goal is always:
 **keep all fork changes, add all upstream changes, land it through a PR.**
 
-Last done: 2026-10-31, bringing in v1.22.0 (branch `claude/nice-tesla-vebkla`).
-Before that: 2026-10-25, v1.21.0 (PR Alarm-Clock-Films/freeframe#17).
+Last done: 2026-11-27, bringing in only the v1.22.2 release tag (the v1.22.1 and
+v1.22.2 security fixes), not upstream main (branch `claude/pensive-meitner-9gbole`).
+Before that: 2026-10-31, v1.22.0 (branch `claude/nice-tesla-vebkla`);
+2026-10-25, v1.21.0 (PR Alarm-Clock-Films/freeframe#17).
 
 ## 1. Measure the gap
 
